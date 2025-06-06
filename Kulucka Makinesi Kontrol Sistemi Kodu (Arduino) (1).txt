@@ -1,0 +1,1710 @@
+﻿// =================================================================================================
+// PROJE: Arduino Tabanlı Kuluçka Makinesi Kontrol Sistemi
+// YAZAR: [Adınız/Kullanıcı Adınız, veya olduğu gibi bırakabilirsiniz]
+// TARİH: 7 Haziran 2025
+// AÇIKLAMA: Bu kod, bir Arduino kullanarak çok fonksiyonlu bir kuluçka makinesi kontrol sistemi uygular.
+// Sıcaklık, nem, yumurta çevirme, aydınlatma ve alarmları yönetir, ayarları EEPROM'da saklar
+// ve düğmeler ile bir OLED ekran aracılığıyla kullanıcı etkileşimi sağlar.
+// =================================================================================================
+
+// =================================================================================================
+// DAHİL EDİLEN KÜTÜPHANELER
+// =================================================================================================
+#include <Wire.h>            // I2C iletişimi için gerekli (OLED, RTC)
+#include <Adafruit_GFX.h>    // OLED için temel grafik kütüphanesi
+#include <Adafruit_SSD1306.h> // SSD1306 OLED ekran kütüphanesi
+#include <RTClib.h>          // RTC (Gerçek Zaman Saati) modülü kütüphanesi
+#include <PID_v1.h>          // Sıcaklık regülasyonu için PID kontrol kütüphanesi
+#include <DHTesp.h>          // DHT22 sıcaklık ve nem sensörü kütüphanesi
+#include <EEPROM.h>          // Kalıcı EEPROM bellek depolama kütüphanesi
+
+// =================================================================================================
+// GLOBAL TANIMLAMALAR
+// =================================================================================================
+
+// OLED Ekran Yapılandırması
+#define SCREEN_WIDTH 128    // OLED ekran genişliği, piksel cinsinden
+#define SCREEN_HEIGHT 64    // OLED ekran yüksekliği, piksel cinsinden
+#define OLED_ADDR 0x3C      // 128x64 OLED ekran için I2C adresi
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1); // Ekran nesnesini başlat
+
+// RTC Modülü Nesnesi
+RTC_DS3231 rtc; // RTC nesnesini başlat
+
+// Buton Pin Tanımlamaları (setupPins içinde dahili PULLUP direnci kullanır)
+const int BUTTON_SET_PIN   = 2; // Seçimi onaylamak veya menüye girmek için düğme
+const int BUTTON_UP_PIN    = 3; // Değeri artırmak veya yukarı gezinmek için düğme
+const int BUTTON_DOWN_PIN  = 4; // Değeri azaltmak veya aşağı gezinmek için düğme
+const int BUTTON_MENU_PIN  = 5; // Ana menüye girmek/çıkmak için düğme (gelişmiş için uzun basış)
+
+// Röle ve Çıkış Pin Tanımlamaları
+const int relayNemPin     = 6;  // Nemlendirici/fan kontrolü için röle (nem)
+const int relayCevirmePin = 7;  // Yumurta çevirme motoru için röle
+const int lambaPin        = 8;  // Dahili ışık için pin
+const int triyakPin       = 9;  // Isıtıcı kontrolü için TRIYAK pini (PID için PWM yetenekli)
+const int buzzerPin       = 10; // Zil için pin (alarmlar, çevirme bildirimleri)
+
+// Sensör Pin Tanımlamaları
+const int dhtPin = A0; // DHT22 sensörü için analog pin
+DHTesp dht;            // DHT sensör nesnesi
+
+// =================================================================================================
+// AYARLARIN EEPROM ADRESLERİ
+// Bu ofsetler, her ayarın kalıcı EEPROM bellekte nerede saklandığını tanımlar.
+// Bu adreslerin çakışmadığından ve her veri türü için yeterli alan bıraktığından emin olun.
+// =================================================================================================
+#define EEPROM_SICAKLIK_HEDEF      0   // double (4 byte) - Hedef sıcaklık
+#define EEPROM_NEM_HEDEF           4   // double (4 byte) - Hedef nem
+#define EEPROM_SICAKLIK_KALIBRASYON 8  // float (4 byte) - Sıcaklık kalibrasyon ofseti
+#define EEPROM_NEM_KALIBRASYON     12  // float (4 byte) - Nem kalibrasyon ofseti
+#define EEPROM_PID_DURUMU          16  // bool (1 byte)   - PID kontrolü aktif durumu
+#define EEPROM_OTO_PID_DURUMU      17  // bool (1 byte)   - Otomatik PID ayarlaması aktif durumu
+#define EEPROM_CEVIRME_DURUMU      18  // bool (1 byte)   - Yumurta çevirme aktif durumu
+#define EEPROM_CEVIRME_ARALIGI     20  // unsigned long (4 byte) - Yumurta çevirme aralığı milisaniye cinsinden
+#define EEPROM_CEVIRME_SURESI      24  // unsigned long (4 byte) - Yumurta çevirme süresi milisaniye cinsinden
+#define EEPROM_NEM_KONTROL_DURUMU  28  // bool (1 byte)   - Nem kontrolü aktif durumu
+#define EEPROM_AYDINLATMA_DURUMU   29  // bool (1 byte)   - Aydınlatma aktif durumu
+#define EEPROM_ALARM_DURUMU        30  // bool (1 byte)   - Alarm aktif durumu
+#define EEPROM_INIT_FLAG           31  // byte (1 byte)   - EEPROM'un başlatılıp başlatılmadığını kontrol etmek için bayrak (başlatıldıysa 0xAA)
+
+// =================================================================================================
+// SİSTEM DURUMU İÇİN GLOBAL DEĞİŞKENLER
+// Bu değişkenler, mevcut ayarları, sensör okumalarını ve operasyonel durumları saklar.
+// =================================================================================================
+
+// Sıcaklık Kontrol Değişkenleri
+double setpointSicaklik = 37.8; // İstenen sıcaklık (Celsius)
+double inputSicaklik = 0.0;     // Mevcut sıcaklık okuması (PID'ye giriş)
+double outputSicaklik = 0.0;    // PID çıkışı (TRIYAK aracılığıyla ısıtıcı gücünü kontrol eder)
+// PID nesnesi: giriş, çıkış, hedef, Kp, Ki, Kd, Yön
+PID pidSicaklik(&inputSicaklik, &outputSicaklik, &setpointSicaklik, 2.0, 0.5, 1.0, DIRECT);
+
+// Nem Kontrol Değişkenleri
+double targetNem = 55.0; // İstenen nem (%)
+
+// Sistem Özellik Bayrakları (EEPROM'dan okunur)
+bool pidAktif = true;        // PID sıcaklık kontrolü aktif mi?
+bool otoPIDaktif = false;    // PID için otomatik ayarlama aktif mi?
+bool nemKontrolAktif = true; // Nem kontrolü aktif mi?
+bool cevirmeDurumu = true;   // Otomatik yumurta çevirme aktif mi?
+bool aydinlatmaAktif = false; // Kuluçka makinesi ışığı aktif mi?
+bool alarmAktif = true;      // Sistem alarmları aktif mi?
+
+// Yumurta Çevirme Değişkenleri
+unsigned long cevirmeAraligi = 7200000; // Yumurta çevirme aralığı (varsayılan: 2 saat = 7,200,000 ms)
+unsigned long cevirmeSuresi = 15000;    // Yumurta çevirme süresi (varsayılan: 15 saniye = 15,000 ms)
+unsigned long sonCevirmeZamani = 0;     // Son yumurta çevirme olayının zaman damgası
+
+// Kalibrasyon Ofsetleri
+float sicaklikKalibrasyon = 0.0; // Sıcaklık sensörü okumaları için ofset
+float nemKalibrasyon = 0.0;     // Nem sensörü okumaları için ofset
+
+// Mevcut Sensör Okumaları
+float mevcutSicaklik = 0.0; // Mevcut kalibre edilmiş sıcaklık
+float mevcutNem = 0.0;     // Mevcut kalibre edilmiş nem
+
+// Yumurta Çevirme Durumu
+bool cevirmeCalisiyor = false;         // Yumurta çevirme motoru şu anda aktif mi?
+unsigned long cevirmeBaslangicZamani = 0; // Yumurta çevirmenin başladığı zaman damgası
+
+// =================================================================================================
+// MENÜ SİSTEMİ NUMARALANDIRMALARI
+// Bu numaralandırmalar, kullanıcı arayüzü menüsü içindeki farklı durumları ve seçenekleri tanımlar.
+// =================================================================================================
+
+// Ana Menü Durumları
+enum MenuState {
+   MENU_ANA,          // Ana ekran
+   MENU_HEDEF_AYARLAR, // Hedef ayarları menüsü (sıcaklık, nem)
+   MENU_3SN_MENU      // Gelişmiş ayarlar menüsü (Menü düğmesine uzun basılarak erişilir)
+};
+
+// Gelişmiş ayarlar için Alt Menü Durumları
+enum SubMenuState {
+   SUB_MENU_NONE,        // Hiçbir alt menü aktif değil
+   SUB_HEDEF_SICAKLIK,   // Hedef sıcaklığı ayarla
+   SUB_HEDEF_NEM,        // Hedef nemi ayarla
+   SUB_KALIBRASYON,      // Kalibrasyon ayarları
+   SUB_PID_AYAR,         // PID kontrol ayarları
+   SUB_CEVIRME_AYAR,     // Yumurta çevirme ayarları
+   SUB_NEM_AYAR,         // Nem kontrolü aç/kapa
+   SUB_AYDINLATMA_AYAR,  // Aydınlatma aç/kapa
+   SUB_ALARM_AYAR        // Alarm aç/kapa
+};
+
+// Kalibrasyon Alt Durumları (SUB_KALIBRASYON içinde)
+enum Kalibrasyon3SnState {
+   KALIBRASYON_ANA,      // Kalibrasyon menüsü ana seçenekleri (sıcaklık, nem)
+   KALIBRASYON_SICAKLIK, // Sıcaklık kalibrasyon ofsetini ayarla
+   KALIBRASYON_NEM       // Nem kalibrasyon ofsetini ayarla
+};
+
+// PID Alt Durumları (SUB_PID_AYAR içinde)
+enum PID3SnState {
+   PID_ANA,    // PID menüsü ana seçenekleri (aç/kapa, otomatik PID)
+   PID_ON_OFF, // PID aktif durumunu değiştir
+   PID_OTO     // Otomatik PID ayarlama durumunu değiştir
+};
+
+// Yumurta Çevirme Alt Durumları (SUB_CEVIRME_AYAR içinde)
+enum Cevirme3SnState {
+   CEVIRME_ANA,           // Yumurta çevirme menüsü ana seçenekleri (aç/kapa, aralıklar)
+   CEVIRME_ARALIK_SAAT,   // Çevirme aralığı saatini ayarla
+   CEVIRME_ARALIK_DAKIKA, // Çevirme aralığı dakikasını ayarla
+   CEVIRME_ARALIK_SANIYE, // Çevirme aralığı saniyesini ayarla
+   CEVIRME_SURE_SAAT,     // Çevirme süresi saatini ayarla
+   CEVIRME_SURE_DAKIKA,   // Çevirme süresi dakikasını ayarla
+   CEVIRME_SURE_SANIYE    // Çevirme süresi saniyesini ayarla
+};
+
+// Mevcut Menü ve Alt Menü Durumları
+MenuState currentMenu = MENU_ANA;             // Varsayılan: Ana ekran
+SubMenuState currentSubMenu = SUB_MENU_NONE; // Varsayılan: Alt menü yok
+Kalibrasyon3SnState kalibrasyonState = KALIBRASYON_ANA; // Varsayılan kalibrasyon durumu
+PID3SnState pidState = PID_ANA;                       // Varsayılan PID durumu
+Cevirme3SnState cevirmeState = CEVIRME_ANA;           // Varsayılan çevirme durumu
+
+// Menü Navigasyon Seçim İndeksleri
+int menuSelectedItem = 0;    // Ana menülerde seçilen öğe için indeks
+int subMenuSelectedItem = 0; // Alt menülerde seçilen öğe için indeks
+
+// Yumurta Çevirme Zamanı Bileşenleri (kullanıcı girişi ve gösterim için)
+int cevirmeAralikSaat = 2;   // Varsayılan 2 saat
+int cevirmeAralikDakika = 0; // Varsayılan 0 dakika
+int cevirmeAralikSaniye = 0; // Varsayılan 0 saniye
+int cevirmeSureSaat = 0;     // Varsayılan 0 saat
+int cevirmeSureDakika = 0;   // Varsayılan 0 dakika
+int cevirmeSureSaniye = 15;  // Varsayılan 15 saniye
+
+// Buton Debounce ve Durum Değişkenleri
+unsigned long lastButtonPressTime = 0;   // Son algılanan düğme basışının zaman damgası
+const unsigned long debounceDelay = 200; // Basışların kaydedilmesi için minimum süre (ms)
+bool buttonSetPressed = false;    // SET düğmesinin mevcut debounced durumu
+bool buttonUpPressed = false;     // UP düğmesinin mevcut debounced durumu
+bool buttonDownPressed = false;   // DOWN düğmesinin mevcut debounced durumu
+bool buttonMenuPressed = false;   // MENÜ düğmesinin mevcut debounced durumu
+
+// Zamanlama Aralıkları
+unsigned long lastSensorRead = 0;       // Son sensör okumasının zaman damgası
+const unsigned long sensorReadInterval = 2000; // Sensörleri her 2 saniyede bir oku
+unsigned long lastDisplayUpdate = 0;    // Son ekran güncellemesinin zaman damgası
+const unsigned long displayUpdateInterval = 500; // Ekranı her 0.5 saniyede bir güncelle
+unsigned long menuTimeout = 0;          // Menü ile son etkileşimin zaman damgası
+const unsigned long menuTimeoutDelay = 15000; // Menü otomatik çıkış gecikmesi (15 saniye)
+
+// =================================================================================================
+// FONKSİYON PROTOTİPLERİ
+// setup() ve loop() öncesinde tüm fonksiyonları tanımlayın, böylece derleyici onları bilir.
+// =================================================================================================
+void setupPins();
+void setupDisplay();
+void setupRTC();
+void setupSensors();
+void updateDisplay();
+void readButtons();
+void handleButtons();
+void handleSetButton();
+void handleUpButton();
+void handleDownButton();
+void handleMenuButton();
+void handleSubMenuUp();
+void handleSubMenuDown();
+void handleCevirmeUp();
+void handleCevirmeDown();
+void handleMenu();
+void readSensorData();
+void kontrolIsi();
+void kontrolNem();
+void kontrolCevirmeOtomatik();
+void kontrolAydinlatma();
+void kontrolAlarm();
+void kaydetEEPROM();
+void okuEEPROM();
+void initializeSystem();
+void resetToDefaults();
+void hesaplaCevirmeZamanlari();
+void displayMainScreen();
+void displayHedefAyarlar();
+void display3SnMenu();
+void displaySubMenu(int mainMenuIndex);
+void displayKalibrasyonMenu();
+void displayPIDMenu();
+void displayCevirmeMenu();
+void sistemDurumuRapor();
+void hataKontrol();
+// void watchdogReset(); // KALDIRILDI: Bu fonksiyon ESP32 mikrodenetleyicilerine özeldir.
+                     // Standart Arduino'lar farklı watchdog zamanlayıcı mekanizmaları kullanır (örn. <avr/wdt.h>).
+                     // ATmega328P için bir watchdog gerçekten gerekliyse, ayrı bir uygulama gereklidir.
+
+// =================================================================================================
+// SETUP FONKSİYONU: Arduino başladığında veya sıfırlandığında bir kez çalışır.
+// =================================================================================================
+void setup() {
+   Serial.begin(9600); // Seri iletişimi hata ayıklama için başlat
+   Serial.println(F("Kuluçka Makinesi Başlatılıyor...")); // Başlangıç mesajını yazdır
+
+   setupPins();    // G/Ç pinlerini yapılandır
+   Wire.begin();   // I2C bus'ını başlat
+   setupDisplay(); // OLED ekranı başlat
+   setupRTC();     // Gerçek Zaman Saatini başlat
+   setupSensors(); // DHT sensörünü başlat
+   okuEEPROM();    // Kaydedilen ayarları EEPROM'dan oku
+   hesaplaCevirmeZamanlari(); // Yüklenen bileşenlerden çevirme aralıklarını/sürelerini yeniden hesapla
+
+   // PID denetleyiciyi yapılandır
+   pidSicaklik.SetOutputLimits(0, 255); // analogWrite için çıkış aralığı (0-255)
+   pidSicaklik.SetMode(AUTOMATIC);     // PID'yi otomatik moda ayarla
+
+   initializeSystem(); // İlk sistem kurulumunu yap (örn. ilk sensör okuma, ekran güncelleme)
+   Serial.println(F("Sistem hazır!")); // Sistem hazır olduğunu onayla
+}
+
+// =================================================================================================
+// LOOP FONKSİYONU: setup() tamamlandıktan sonra sürekli olarak çalışır.
+// Bu, kuluçka makinesinin ana çalışma döngüsüdür.
+// =================================================================================================
+void loop() {
+   unsigned long currentTime = millis(); // Mevcut zamanı milisaniye cinsinden al
+
+   readButtons();      // Tüm düğmelerin ham durumunu oku
+   handleButtons();    // Düğme basışlarını işle (debounce, durum değişiklikleri)
+   handleMenu();       // Menü navigasyonunu ve zaman aşımlarını yönet
+
+   // Sensör verilerini okuma zamanı gelip gelmediğini kontrol et
+   if (currentTime - lastSensorRead >= sensorReadInterval) {
+       readSensorData();   // Sıcaklık ve nemi oku
+       lastSensorRead = currentTime;
+   }
+
+   // Mevcut sensör verilerine ve ayarlara göre kontrol sistemi fonksiyonları
+   kontrolIsi();               // PID veya basit ON/OFF kullanarak ısıtmayı yönet
+   kontrolNem();               // Nemlendirici rölesi kullanarak nemi yönet
+   kontrolCevirmeOtomatik();   // Otomatik yumurta çevirmeyi yönet
+   kontrolAydinlatma();        // Dahili ışığı kontrol et
+   kontrolAlarm();             // Kritik uyarılar için zili etkinleştir
+
+   // OLED ekranı güncelleme zamanı gelip gelmediğini kontrol et
+   if (currentTime - lastDisplayUpdate >= displayUpdateInterval) {
+       updateDisplay();    // Ekran içeriğini yenile
+       lastDisplayUpdate = currentTime;
+   }
+
+   sistemDurumuRapor(); // Periyodik olarak sistem durumunu Seri port'a yazdır (hata ayıklama için)
+   hataKontrol();       // Hata kontrollerini yap ve sorunlar algılanırsa uyar/alarm ver
+   // watchdogReset(); // KALDIRILDI: Fonksiyon prototiplerindeki açıklamaya bakın.
+
+   delay(50); // Meşgul beklemeyi önlemek ve diğer görevlere izin vermek için küçük bir gecikme
+}
+
+// =================================================================================================
+// BAŞLATMA FONKSİYONLARI
+// =================================================================================================
+
+/**
+* @brief Tüm giriş ve çıkış pinlerini yapılandırır.
+*/
+void setupPins() {
+   // Buton pinlerini dahili pull-up dirençleriyle giriş olarak ayarla
+   pinMode(BUTTON_SET_PIN, INPUT_PULLUP);
+   pinMode(BUTTON_UP_PIN, INPUT_PULLUP);
+   pinMode(BUTTON_DOWN_PIN, INPUT_PULLUP);
+   pinMode(BUTTON_MENU_PIN, INPUT_PULLUP);
+
+   // Röle ve çıkış pinlerini çıkış olarak ayarla
+   pinMode(relayNemPin, OUTPUT);
+   pinMode(relayCevirmePin, OUTPUT);
+   pinMode(lambaPin, OUTPUT);
+   pinMode(triyakPin, OUTPUT); // Bu pinin analogWrite için PWM özelliğine sahip olması gerekir
+   pinMode(buzzerPin, OUTPUT);
+
+   // Tüm çıkışların başlangıçta KAPALI/DÜŞÜK olduğundan emin ol
+   digitalWrite(relayNemPin, LOW);
+   digitalWrite(relayCevirmePin, LOW);
+   digitalWrite(lambaPin, LOW);
+   analogWrite(triyakPin, 0); // Isıtıcı kapalı
+   digitalWrite(buzzerPin, LOW);
+}
+
+/**
+* @brief OLED ekranı başlatır ve bir karşılama ekranı gösterir.
+*/
+void setupDisplay() {
+   // SSD1306 ekranını başlatmaya çalış
+   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+       Serial.println(F("SSD1306 ekran tahsisi başarısız!"));
+       for (;;); // Ekran başlatma başarısız olursa süresiz döngüde kal (kritik hata)
+   }
+
+   // Ekranı temizle, metin özelliklerini ayarla ve başlangıç karşılama ekranını göster
+   display.clearDisplay();
+   display.setTextSize(2);        // Büyük metin boyutu
+   display.setTextColor(SSD1306_WHITE); // Beyaz metin rengi
+   display.setCursor(10, 20);     // İmleç konumunu ayarla
+   display.println(F("KULUCKA")); // İlk satırı yazdır
+   display.setCursor(15, 40);     // İkinci satır için imleç konumunu ayarla
+   display.println(F("MAKINESI")); // İkinci satırı yazdır
+   display.display();             // İçeriği ekranda göster
+   delay(2000);                   // 2 saniye göster
+}
+
+/**
+* @brief RTC modülünü başlatır ve bağlantı hatalarını yönetir.
+*/
+void setupRTC() {
+   if (!rtc.begin()) {
+       Serial.println(F("RTC başarısız!")); // Hata mesajını seri port'a yazdır
+       // RTC başarısız olursa OLED'de hata mesajı göster
+       display.clearDisplay();
+       display.setTextSize(1);
+       display.setCursor(0, 0);
+       display.println(F("RTC Hatasi!"));
+       display.display();
+       delay(2000);
+   }
+   // İsteğe bağlı olarak RTC saatini çalıştırmıyorsa veya yanlışsa ayarla
+   // rtc.adjust(DateTime(F(__DATE__), F(__TIME__))); // Derleme zamanından saati ayarlamak için yorumu kaldır
+}
+
+/**
+* @brief DHT sıcaklık ve nem sensörünü başlatır.
+*/
+void setupSensors() {
+   dht.setup(dhtPin, DHTesp::DHT22); // DHTesp kütüphanesini dhtPin'deki DHT22 için yapılandır
+}
+
+/**
+* @brief Temel bileşenler hazır olduktan sonra ilk sistem kurulum görevlerini gerçekleştirir.
+* Bu, ilk sensör verilerini okuma ve ana ekranı görüntülemeyi içerir.
+*/
+void initializeSystem() {
+   sonCevirmeZamani = millis(); // İlk son çevirme zamanını mevcut zamana ayarla
+   readSensorData();            // İlk sensör okumalarını al
+   updateDisplay();             // İlk verilerle ekranı güncelle
+
+   // Başlangıç ayarlarını doğrulama için Seri port'a yazdır
+   Serial.print(F("Hedef Sıcaklık: ")); Serial.println(setpointSicaklik);
+   Serial.print(F("Hedef Nem: ")); Serial.println(targetNem);
+   Serial.print(F("PID Aktif: ")); Serial.println(pidAktif ? F("EVET") : F("HAYIR"));
+   Serial.print(F("Çevirme Aktif: ")); Serial.println(cevirmeDurumu ? F("EVET") : F("HAYIR"));
+}
+
+/**
+* @brief Kullanıcı tarafından ayarlanan saat, dakika ve saniye bileşenlerine göre
+* toplam yumurta çevirme aralığını ve süresini milisaniye cinsinden yeniden hesaplar.
+*/
+void hesaplaCevirmeZamanlari() {
+   cevirmeAraligi = (unsigned long)cevirmeAralikSaat * 3600000UL + // Saatleri milisaniyeye çevir
+                    (unsigned long)cevirmeAralikDakika * 60000UL + // Dakikaları milisaniyeye çevir
+                    (unsigned long)cevirmeAralikSaniye * 1000UL;   // Saniyeleri milisaniyeye çevir
+
+   cevirmeSuresi = (unsigned long)cevirmeSureSaat * 3600000UL +   // Saatleri milisaniyeye çevir
+                   (unsigned long)cevirmeSureDakika * 60000UL +   // Dakikaları milisaniyeye çevir
+                   (unsigned long)cevirmeSureSaniye * 1000UL;     // Saniyeleri milisaniyeye çevir
+}
+
+// =================================================================================================
+// BUTON YÖNETİMİ FONKSİYONLARI
+// =================================================================================================
+
+/**
+* @brief Tüm düğmelerin durumunu basit bir global debounce ile okur.
+* Bu fonksiyon `buttonXPressed` boolean bayraklarını günceller.
+*/
+void readButtons() {
+   static unsigned long lastDebounceTime = 0; // Son debounce zaman damgasını tutmak için statik değişken
+   unsigned long currentTime = millis();      // Mevcut zamanı al
+
+   // Düğme durumlarını yalnızca son okumadan yeterli zaman geçtiyse oku,
+   // tek bir fiziksel basıştan birden çok hızlı kaydı önler.
+   if (currentTime - lastDebounceTime > debounceDelay) {
+       buttonSetPressed = !digitalRead(BUTTON_SET_PIN);    // SET düğmesini oku (INPUT_PULLUP ile aktif düşük)
+       buttonUpPressed = !digitalRead(BUTTON_UP_PIN);      // UP düğmesini oku
+       buttonDownPressed = !digitalRead(BUTTON_DOWN_PIN);  // DOWN düğmesini oku
+       buttonMenuPressed = !digitalRead(BUTTON_MENU_PIN);  // MENÜ düğmesini oku
+
+       // Herhangi bir düğmeye şu anda basılıyorsa, debounce zamanlayıcısını sıfırla
+       // debounce gecikmesi geçene kadar tekrar okumayı önle.
+       if (buttonSetPressed || buttonUpPressed || buttonDownPressed || buttonMenuPressed) {
+           lastDebounceTime = currentTime;
+       }
+   }
+}
+
+/**
+* @brief Debounced düğme durumlarını işleyerek yükselen kenarları (basışları) algılar.
+* Her düğme için belirli işleyicileri çağırır.
+*/
+void handleButtons() {
+   // Her düğmenin önceki durumunu saklamak için statik değişkenler,
+   // bir "yükselen kenarı" (düğmeye yeni basıldı) algılamak için kullanılır.
+   static bool setButtonWasPressed = false;
+   static bool upButtonWasPressed = false;
+   static bool downButtonWasPressed = false;
+   static bool menuButtonWasPressed = false;
+
+   // SET düğmesi basışını algıla ve işle
+   if (buttonSetPressed && !setButtonWasPressed) {
+       handleSetButton();       // SET düğmesi için belirli işleyiciyi çağır
+       menuTimeout = millis();  // Herhangi bir düğme etkileşiminde menü zaman aşımını sıfırla
+   }
+   setButtonWasPressed = buttonSetPressed; // Önceki durumu güncelle
+
+   // UP düğmesi basışını algıla ve işle
+   if (buttonUpPressed && !upButtonWasPressed) {
+       handleUpButton();        // UP düğmesi için belirli işleyiciyi çağır
+       menuTimeout = millis();
+   }
+   upButtonWasPressed = buttonUpPressed;
+
+   // DOWN düğmesi basışını algıla ve işle
+   if (buttonDownPressed && !downButtonWasPressed) {
+       handleDownButton();      // DOWN düğmesi için belirli işleyiciyi çağır
+       menuTimeout = millis();
+   }
+   downButtonWasPressed = buttonDownPressed;
+
+   // MENÜ düğmesi basışını algıla ve işle
+   if (buttonMenuPressed && !menuButtonWasPressed) {
+       handleMenuButton();      // MENÜ düğmesi için belirli işleyiciyi çağır
+       menuTimeout = millis();
+   }
+   menuButtonWasPressed = buttonMenuPressed;
+}
+
+/**
+* @brief SET düğmesine basıldığında mantığı işler.
+* Ana menüler ve alt menüler arasındaki geçişleri yönetir.
+*/
+void handleSetButton() {
+   // Ana ekranda ise, SET'e basmak "Hedef Ayarlar" menüsüne geçer.
+   if (currentMenu == MENU_ANA) {
+       currentMenu = MENU_HEDEF_AYARLAR;
+       menuSelectedItem = 0;   // Menü seçimini sıfırla
+       menuTimeout = millis(); // Zaman aşımını sıfırla
+       return; // Fonksiyondan erken çık
+   }
+
+   // Şu anda bir alt menüde ise, SET'e basmak alt menüden çıkar.
+   if (currentSubMenu != SUB_MENU_NONE) {
+       currentSubMenu = SUB_MENU_NONE; // Alt menüden çık
+       subMenuSelectedItem = 0;        // Alt menü seçimini sıfırla
+       // Alt menüye özel durumları çıkarken sıfırla
+       kalibrasyonState = KALIBRASYON_ANA;
+       pidState = PID_ANA;
+       cevirmeState = CEVIRME_ANA;
+   } else {
+       // Bir alt menüde değil, ancak bir ana menüde (HEDEF_AYARLAR veya 3SN_MENU gibi) ise,
+       // SET'e basmak, şu anda seçili öğeye göre belirli bir alt menüye girer.
+       if (currentMenu == MENU_HEDEF_AYARLAR) {
+           if (menuSelectedItem == 0) {
+               currentSubMenu = SUB_HEDEF_SICAKLIK; // Sıcaklık ayarlamasına gir
+           } else if (menuSelectedItem == 1) {
+               currentSubMenu = SUB_HEDEF_NEM;      // Nem ayarlamasına gir
+           }
+       } else if (currentMenu == MENU_3SN_MENU) {
+           // Gelişmiş ayarlar menüsünden belirli alt menülere gir
+           if (menuSelectedItem == 0) {
+               currentSubMenu = SUB_KALIBRASYON;
+               kalibrasyonState = KALIBRASYON_ANA; // Kalibrasyon durumunu sıfırla
+           } else if (menuSelectedItem == 1) {
+               currentSubMenu = SUB_PID_AYAR;
+               pidState = PID_ANA; // PID durumunu sıfırla
+           } else if (menuSelectedItem == 2) {
+               currentSubMenu = SUB_CEVIRME_AYAR;
+               cevirmeState = CEVIRME_ANA; // Çevirme durumunu sıfırla
+           } else if (menuSelectedItem == 3) {
+               currentSubMenu = SUB_NEM_AYAR;
+           } else if (menuSelectedItem == 4) {
+               currentSubMenu = SUB_AYDINLATMA_AYAR;
+           } else if (menuSelectedItem == 5) {
+               currentSubMenu = SUB_ALARM_AYAR;
+           }
+       }
+   }
+}
+
+/**
+* @brief UP düğmesine basıldığında mantığı işler.
+* Menülerde yukarı gezinir veya alt menülerde değerleri artırır.
+*/
+void handleUpButton() {
+   // Ana ekranda ise, UP düğmesinin bir etkisi yoktur.
+   if (currentMenu == MENU_ANA) {
+       return;
+   }
+
+   // Bir alt menü aktifse, `handleSubMenuUp`'a devret.
+   if (currentSubMenu != SUB_MENU_NONE) {
+       handleSubMenuUp();
+   } else {
+       // Aksi takdirde, mevcut ana menüde yukarı gezin.
+       if (currentMenu == MENU_HEDEF_AYARLAR) {
+           // "Hedef Ayarlar" menüsünde (2 öğe: 0, 1)
+           menuSelectedItem = (menuSelectedItem > 0) ? menuSelectedItem - 1 : 1; // Başa sar
+       } else if (currentMenu == MENU_3SN_MENU) {
+           // "Gelişmiş Ayarlar" menüsünde (6 öğe: 0-5)
+           menuSelectedItem = (menuSelectedItem > 0) ? menuSelectedItem - 1 : 5; // Başa sar
+       }
+   }
+}
+
+/**
+* @brief DOWN düğmesine basıldığında mantığı işler.
+* Menülerde aşağı gezinir veya alt menülerde değerleri azaltır.
+*/
+void handleDownButton() {
+   // Ana ekranda ise, DOWN düğmesinin bir etkisi yoktur.
+   if (currentMenu == MENU_ANA) {
+       return;
+   }
+
+   // Bir alt menü aktifse, `handleSubMenuDown`'a devret.
+   if (currentSubMenu != SUB_MENU_NONE) {
+       handleSubMenuDown();
+   } else {
+       // Aksi takdirde, mevcut ana menüde aşağı gezin.
+       if (currentMenu == MENU_HEDEF_AYARLAR) {
+           // "Hedef Ayarlar" menüsünde (2 öğe: 0, 1)
+           menuSelectedItem = (menuSelectedItem < 1) ? menuSelectedItem + 1 : 0; // Başa sar
+       } else if (currentMenu == MENU_3SN_MENU) {
+           // "Gelişmiş Ayarlar" menüsünde (6 öğe: 0-5)
+           menuSelectedItem = (menuSelectedItem < 5) ? menuSelectedItem + 1 : 0; // Başa sar
+       }
+   }
+}
+
+/**
+* @brief MENÜ düğmesine basıldığında mantığı işler (kısa veya uzun basış).
+* Kısa basış: Mevcut menüden/alt menüden çıkar.
+* Uzun basış (3 saniye): Ana ekrandan gelişmiş ayarlar menüsüne (MENU_3SN_MENU) girer/çıkar.
+*/
+void handleMenuButton() {
+   static unsigned long menuButtonHoldTime = 0; // MENÜ düğmesine ilk basıldığında zaman damgası
+   static bool menuButtonHolding = false;       // MENÜ düğmesinin basılı tutulup tutulmadığını gösteren bayrak
+
+   // Düğme şu anda basılıysa ve daha önce basılı değilse, zamanlamayı başlat.
+   if (!menuButtonHolding) {
+       menuButtonHoldTime = millis();
+       menuButtonHolding = true;
+   }
+
+   // MENU_3SN_MENU'ye girmek/çıkmak için uzun basışı (3 saniye) kontrol et.
+   if (millis() - menuButtonHoldTime >= 3000) {
+       if (currentMenu == MENU_ANA) {
+           currentMenu = MENU_3SN_MENU; // Gelişmiş ayarlar menüsüne gir
+           menuSelectedItem = 0;       // Seçimi sıfırla
+           menuTimeout = millis();     // Zaman aşımını sıfırla
+       }
+       menuButtonHolding = false; // Basılı tutma bayrağını sıfırla
+       return; // Uzun basma eylemi işlendiği için fonksiyondan çık.
+   }
+
+   // Bir alt menü aktifse (kısa basış davranışı), alt menüden çık.
+   if (currentSubMenu != SUB_MENU_NONE) {
+       currentSubMenu = SUB_MENU_NONE; // Alt menüden çık
+       subMenuSelectedItem = 0;        // Seçimi sıfırla
+       // Alt menüye özel durumları sıfırla
+       kalibrasyonState = KALIBRASYON_ANA;
+       pidState = PID_ANA;
+       cevirmeState = CEVIRME_ANA;
+   }
+   // Ana ekranda ise, kısa basış hiçbir şey yapmaz (burada sadece uzun basış önemlidir).
+   else if (currentMenu == MENU_ANA) {
+       menuButtonHolding = false; // Ana ekranda kısa basış ise basılı tutma bayrağını sıfırla
+   }
+   // MENU_HEDEF_AYARLAR veya MENU_3SN_MENU'de ise (kısa basış davranışı), ana ekrana dön.
+   else {
+       currentMenu = MENU_ANA;        // Ana ekrana dön
+       currentSubMenu = SUB_MENU_NONE; // Alt menü aktif olmadığından emin ol
+       menuSelectedItem = 0;          // Seçimi sıfırla
+       menuButtonHolding = false;     // Basılı tutma bayrağını sıfırla
+   }
+}
+
+/**
+* @brief Aktif alt menüler içinde değerleri artırmayı veya yukarı gezinmeyi işler.
+* Bir alt menü aktif olduğunda handleUpButton tarafından çağrılır.
+*/
+void handleSubMenuUp() {
+   switch (currentSubMenu) {
+       case SUB_HEDEF_SICAKLIK:
+           setpointSicaklik += 0.5;                // Hedef sıcaklığı 0.5 artır
+           if (setpointSicaklik > 42.0) setpointSicaklik = 42.0; // Maksimum sıcaklığı sınırla
+           kaydetEEPROM();                         // Ayarı EEPROM'a kaydet
+           break;
+
+       case SUB_HEDEF_NEM:
+           targetNem += 5.0;                       // Hedef nemi 5.0 artır
+           if (targetNem > 80.0) targetNem = 80.0; // Maksimum nemi sınırla
+           kaydetEEPROM();
+           break;
+
+       case SUB_KALIBRASYON:
+           if (kalibrasyonState == KALIBRASYON_ANA) {
+               // Kalibrasyon ana seçeneklerinde (Sıcaklık, Nem) yukarı gezin
+               subMenuSelectedItem = (subMenuSelectedItem > 0) ? subMenuSelectedItem - 1 : 1;
+           } else if (kalibrasyonState == KALIBRASYON_SICAKLIK) {
+               sicaklikKalibrasyon += 0.1;             // Sıcaklık kalibrasyonunu 0.1 artır
+               if (sicaklikKalibrasyon > 5.0) sicaklikKalibrasyon = 5.0; // Maksimum ofseti sınırla
+               kaydetEEPROM();
+           } else if (kalibrasyonState == KALIBRASYON_NEM) {
+               nemKalibrasyon += 1.0;                  // Nem kalibrasyonunu 1.0 artır
+               if (nemKalibrasyon > 20.0) nemKalibrasyon = 20.0; // Maksimum ofseti sınırla
+               kaydetEEPROM();
+           }
+           break;
+
+       case SUB_PID_AYAR:
+           if (pidState == PID_ANA) {
+               // PID ana seçeneklerinde (Aç/Kapa, Otomatik PID) yukarı gezin
+               subMenuSelectedItem = (subMenuSelectedItem > 0) ? subMenuSelectedItem - 1 : 1;
+           } else if (pidState == PID_ON_OFF) {
+               pidAktif = !pidAktif; // PID aktif durumunu değiştir
+               if (!pidAktif) {
+                   analogWrite(triyakPin, 0); // PID devre dışı bırakılırsa ısıtıcıyı hemen kapat
+               }
+               kaydetEEPROM();
+           } else if (pidState == PID_OTO) {
+               otoPIDaktif = !otoPIDaktif; // Otomatik-PID aktif durumunu değiştir
+               kaydetEEPROM();
+           }
+           break;
+
+       case SUB_CEVIRME_AYAR:
+           handleCevirmeUp(); // Özel çevirme ayarlama fonksiyonuna devret
+           break;
+
+       case SUB_NEM_AYAR:
+           nemKontrolAktif = !nemKontrolAktif; // Nem kontrolü aktif durumunu değiştir
+           kaydetEEPROM();
+           break;
+
+       case SUB_AYDINLATMA_AYAR:
+           aydinlatmaAktif = !aydinlatmaAktif; // Aydınlatma aktif durumunu değiştir
+           kaydetEEPROM();
+           break;
+
+       case SUB_ALARM_AYAR:
+           alarmAktif = !alarmAktif; // Alarm aktif durumunu değiştir
+           kaydetEEPROM();
+           break;
+   }
+}
+
+/**
+* @brief Aktif alt menüler içinde değerleri azaltmayı veya aşağı gezinmeyi işler.
+* Bir alt menü aktif olduğunda handleDownButton tarafından çağrılır.
+*/
+void handleSubMenuDown() {
+   switch (currentSubMenu) {
+       case SUB_HEDEF_SICAKLIK:
+           setpointSicaklik -= 0.5;                // Hedef sıcaklığı 0.5 azalt
+           if (setpointSicaklik < 35.0) setpointSicaklik = 35.0; // Minimum sıcaklığı sınırla
+           kaydetEEPROM();
+           break;
+
+       case SUB_HEDEF_NEM:
+           targetNem -= 5.0;                       // Hedef nemi 5.0 azalt
+           if (targetNem < 40.0) targetNem = 40.0; // Minimum nemi sınırla
+           kaydetEEPROM();
+           break;
+
+       case SUB_KALIBRASYON:
+           if (kalibrasyonState == KALIBRASYON_ANA) {
+               // Kalibrasyon ana seçeneklerinde (Sıcaklık, Nem) aşağı gezin
+               subMenuSelectedItem = (subMenuSelectedItem < 1) ? subMenuSelectedItem + 1 : 0;
+           } else if (kalibrasyonState == KALIBRASYON_SICAKLIK) {
+               sicaklikKalibrasyon -= 0.1;             // Sıcaklık kalibrasyonunu 0.1 azalt
+               if (sicaklikKalibrasyon < -5.0) sicaklikKalibrasyon = -5.0; // Minimum ofseti sınırla
+               kaydetEEPROM();
+           } else if (kalibrasyonState == KALIBRASYON_NEM) {
+               nemKalibrasyon -= 1.0;                  // Nem kalibrasyonunu 1.0 azalt
+               if (nemKalibrasyon < -20.0) nemKalibrasyon = -20.0; // Minimum ofseti sınırla
+               kaydetEEPROM();
+           }
+           break;
+
+       case SUB_PID_AYAR:
+           if (pidState == PID_ANA) {
+               // PID ana seçeneklerinde (Aç/Kapa, Otomatik PID) aşağı gezin
+               subMenuSelectedItem = (subMenuSelectedItem < 1) ? subMenuSelectedItem + 1 : 0;
+           } else if (pidState == PID_ON_OFF) {
+               pidAktif = !pidAktif; // PID aktif durumunu değiştir
+               if (!pidAktif) {
+                   analogWrite(triyakPin, 0); // PID devre dışı bırakılırsa ısıtıcıyı hemen kapat
+               }
+               kaydetEEPROM();
+           } else if (pidState == PID_OTO) {
+               otoPIDaktif = !otoPIDaktif; // Otomatik-PID aktif durumunu değiştir
+               kaydetEEPROM();
+           }
+           break;
+
+       case SUB_CEVIRME_AYAR:
+           handleCevirmeDown(); // Özel çevirme ayarlama fonksiyonuna devret
+           break;
+
+       case SUB_NEM_AYAR:
+           nemKontrolAktif = !nemKontrolAktif; // Nem kontrolü aktif durumunu değiştir
+           kaydetEEPROM();
+           break;
+
+       case SUB_AYDINLATMA_AYAR:
+           aydinlatmaAktif = !aydinlatmaAktif; // Aydınlatma aktif durumunu değiştir
+           kaydetEEPROM();
+           break;
+
+       case SUB_ALARM_AYAR:
+           alarmAktif = !alarmAktif; // Alarm aktif durumunu değiştir
+           kaydetEEPROM();
+           break;
+   }
+}
+
+/**
+* @brief Yumurta çevirme aralığı ve süresi için zaman bileşenlerini artırmayı işler.
+* `SUB_CEVIRME_AYAR` aktif olduğunda handleSubMenuUp tarafından çağrılır.
+*/
+void handleCevirmeUp() {
+   if (cevirmeState == CEVIRME_ANA) {
+       // Çevirme menüsü ana seçeneklerinde (Aç/Kapa, Aralık S/D/S, Süre S/D/S) yukarı gezin
+       subMenuSelectedItem = (subMenuSelectedItem > 0) ? subMenuSelectedItem - 1 : 5; // Başa sar
+   } else if (cevirmeState == CEVIRME_ARALIK_SAAT) {
+       cevirmeAralikSaat++;
+       if (cevirmeAralikSaat > 23) cevirmeAralikSaat = 0; // 0-23 saat arasında döngü
+       hesaplaCevirmeZamanlari(); // Toplam aralığı yeniden hesapla
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_ARALIK_DAKIKA) {
+       cevirmeAralikDakika++;
+       if (cevirmeAralikDakika > 59) cevirmeAralikDakika = 0; // 0-59 dakika arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_ARALIK_SANIYE) {
+       cevirmeAralikSaniye++;
+       if (cevirmeAralikSaniye > 59) cevirmeAralikSaniye = 0; // 0-59 saniye arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_SURE_SAAT) {
+       cevirmeSureSaat++;
+       if (cevirmeSureSaat > 23) cevirmeSureSaat = 0; // 0-23 saat arasında döngü
+       hesaplaCevirmeZamanlari(); // Toplam süreyi yeniden hesapla
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_SURE_DAKIKA) {
+       cevirmeSureDakika++;
+       if (cevirmeSureDakika > 59) cevirmeSureDakika = 0; // 0-59 dakika arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_SURE_SANIYE) {
+       cevirmeSureSaniye++;
+       if (cevirmeSureSaniye > 59) cevirmeSureSaniye = 0; // 0-59 saniye arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   }
+}
+
+/**
+* @brief Yumurta çevirme aralığı ve süresi için zaman bileşenlerini azaltmayı işler.
+* `SUB_CEVIRME_AYAR` aktif olduğunda handleSubMenuDown tarafından çağrılır.
+*/
+void handleCevirmeDown() {
+   if (cevirmeState == CEVIRME_ANA) {
+       // Çevirme menüsü ana seçeneklerinde (Aç/Kapa, Aralık S/D/S, Süre S/D/S) aşağı gezin
+       subMenuSelectedItem = (subMenuSelectedItem < 5) ? subMenuSelectedItem + 1 : 0; // Başa sar
+   } else if (cevirmeState == CEVIRME_ARALIK_SAAT) {
+       cevirmeAralikSaat--;
+       if (cevirmeAralikSaat < 0) cevirmeAralikSaat = 23; // 23-0 saat arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_ARALIK_DAKIKA) {
+       cevirmeAralikDakika--;
+       if (cevirmeAralikDakika < 0) cevirmeAralikDakika = 59; // 59-0 dakika arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_ARALIK_SANIYE) {
+       cevirmeAralikSaniye--;
+       if (cevirmeAralikSaniye < 0) cevirmeAralikSaniye = 59; // 59-0 saniye arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_SURE_SAAT) {
+       cevirmeSureSaat--;
+       if (cevirmeSureSaat < 0) cevirmeSureSaat = 23; // 23-0 saat arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_SURE_DAKIKA) {
+       cevirmeSureDakika--;
+       if (cevirmeSureDakika < 0) cevirmeSureDakika = 59; // 59-0 dakika arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   } else if (cevirmeState == CEVIRME_SURE_SANIYE) {
+       cevirmeSureSaniye--;
+       if (cevirmeSureSaniye < 0) cevirmeSureSaniye = 59; // 59-0 saniye arasında döngü
+       hesaplaCevirmeZamanlari();
+       kaydetEEPROM();
+   }
+}
+
+/**
+* @brief Menü sistemi durumunu, otomatik zaman aşımları da dahil olmak üzere yönetir.
+* Ayrıca alt menülerdeki belirli SET düğmesi eylemlerini de işler.
+*/
+void handleMenu() {
+   // Ana menüde değilse ve menü zaman aşımı süresi dolduysa, ana menüye geri dön.
+   if (currentMenu != MENU_ANA && millis() - menuTimeout > menuTimeoutDelay) {
+       currentMenu = MENU_ANA;        // Ana ekrana geri dön
+       currentSubMenu = SUB_MENU_NONE; // Aktif alt menü varsa temizle
+       menuSelectedItem = 0;          // Ana menü seçimini sıfırla
+       subMenuSelectedItem = 0;       // Alt menü seçimini sıfırla
+       // Belirli alt menü durumlarını sıfırla
+       kalibrasyonState = KALIBRASYON_ANA;
+       pidState = PID_ANA;
+       cevirmeState = CEVIRME_ANA;
+   }
+
+   // CEVIRME_AYAR (Yumurta Çevirme) alt menüsü için özel SET düğmesi yönetimi.
+   // Bu, çevirmeyi AÇ/KAPA veya belirli zaman ayarlama modlarına girmeyi sağlar.
+   if (currentSubMenu == SUB_CEVIRME_AYAR && buttonSetPressed) {
+       if (cevirmeState == CEVIRME_ANA) {
+           // Ana çevirme ayarları ekranında ise
+           if (subMenuSelectedItem == 0) { // "Aç/Kapa" seçiliyse
+               cevirmeDurumu = !cevirmeDurumu; // Çevirme durumunu değiştir
+               kaydetEEPROM();
+           } else if (subMenuSelectedItem == 1) { // "Aralık S" seçiliyse
+               cevirmeState = CEVIRME_ARALIK_SAAT; // Aralık saat ayarlamasına gir
+           } else if (subMenuSelectedItem == 2) { // "Aralık D" seçiliyse
+               cevirmeState = CEVIRME_ARALIK_DAKIKA; // Aralık dakika ayarlamasına gir
+           } else if (subMenuSelectedItem == 3) { // "Aralık S" seçiliyse
+               cevirmeState = CEVIRME_ARALIK_SANIYE; // Aralık saniye ayarlamasına gir
+           } else if (subMenuSelectedItem == 4) { // "Süre S" seçiliyse
+               cevirmeState = CEVIRME_SURE_SAAT; // Süre saat ayarlamasına gir
+           } else if (subMenuSelectedItem == 5) { // "Süre D" seçiliyse
+               cevirmeState = CEVIRME_SURE_DAKIKA; // Süre dakika ayarlamasına gir
+           } else if (subMenuSelectedItem == 6) { // "Süre S" seçiliyse
+               cevirmeState = CEVIRME_SURE_SANIYE; // Süre saniye ayarlamasına gir
+           }
+       } else {
+           // Şu anda belirli bir zaman bileşenini ayarlıyorsa, SET'e basmak ana çevirme ayarlarına döner.
+           cevirmeState = CEVIRME_ANA;
+       }
+   }
+
+   // KALIBRASYON (Kalibrasyon) alt menüsü için özel SET düğmesi yönetimi.
+   // Belirli sıcaklık veya nem kalibrasyon modlarına girmeyi sağlar.
+   if (currentSubMenu == SUB_KALIBRASYON && buttonSetPressed) {
+       if (kalibrasyonState == KALIBRASYON_ANA) {
+           // Ana kalibrasyon ekranında ise
+           if (subMenuSelectedItem == 0) { // "Sıcaklık" seçiliyse
+               kalibrasyonState = KALIBRASYON_SICAKLIK; // Sıcaklık kalibrasyon ayarlamasına gir
+           } else if (subMenuSelectedItem == 1) { // "Nem" seçiliyse
+               kalibrasyonState = KALIBRASYON_NEM; // Nem kalibrasyon ayarlamasına gir
+           }
+       } else {
+           // Şu anda belirli bir kalibrasyon ofsetini ayarlıyorsa, SET'e basmak ana kalibrasyon ekranına döner.
+           kalibrasyonState = KALIBRASYON_ANA;
+       }
+   }
+
+   // PID_AYAR (PID Ayarları) alt menüsü için özel SET düğmesi yönetimi.
+   // PID Kontrolünü veya Otomatik PID ayarlamasına girmeyi sağlar.
+   if (currentSubMenu == SUB_PID_AYAR && buttonSetPressed) {
+       if (pidState == PID_ANA) {
+           // Ana PID ayarları ekranında ise
+           if (subMenuSelectedItem == 0) { // "PID Aç/Kapa" seçiliyse
+               pidState = PID_ON_OFF; // PID Aç/Kapa ayarlamasına gir
+           } else if (subMenuSelectedItem == 1) { // "Oto PID" seçiliyse
+               pidState = PID_OTO; // Otomatik PID ayarlamasına gir
+           }
+       } else {
+           // Şu anda belirli bir PID ayarını ayarlıyorsa, SET'e basmak ana PID ayarlarına döner.
+           pidState = PID_ANA;
+       }
+   }
+}
+
+
+// =================================================================================================
+// SENSÖR OKUMA FONKSİYONU
+// =================================================================================================
+
+/**
+* @brief DHT22 sensöründen sıcaklık ve nemi okur ve kalibrasyonu uygular.
+* `mevcutSicaklik` ve `mevcutNem` global değişkenlerini günceller.
+*/
+void readSensorData() {
+   TempAndHumidity dhtValues = dht.getTempAndHumidity(); // DHT sensöründen ham sıcaklık ve nemi al
+
+   // Sensör okumasının başarılı olup olmadığını kontrol et
+   if (dht.getStatus() == DHTesp::ERROR_NONE) {
+       mevcutSicaklik = dhtValues.temperature + sicaklikKalibrasyon; // Sıcaklık kalibrasyonunu uygula
+       mevcutNem = dhtValues.humidity + nemKalibrasyon;         // Nem kalibrasyonunu uygula
+       inputSicaklik = mevcutSicaklik;                          // Kalibre edilmiş sıcaklıkla PID girişini güncelle
+
+       // Hata ayıklama için okumaları seri port'a yazdır
+       Serial.print(F("Sıcaklık: ")); Serial.print(mevcutSicaklik, 1); Serial.print(F("°C, "));
+       Serial.print(F("Nem: ")); Serial.print(mevcutNem, 0); Serial.println(F("%"));
+   } else {
+       // Okuma başarısız olursa sensör hata mesajını yazdır
+       Serial.print(F("DHT Sensör Hatası: "));
+       Serial.println(dht.getStatusString());
+   }
+}
+
+// =================================================================================================
+// KONTROL FONKSİYONLARI
+// Bu fonksiyonlar, kuluçka makinesi ortamını yönetmek için temel mantığı uygular.
+// =================================================================================================
+
+/**
+* @brief Isıtma elemanını PID algoritmasına veya basit ON/OFF'a göre kontrol eder.
+*/
+void kontrolIsi() {
+   if (pidAktif) {
+       // PID kontrolü aktifse, mevcut sıcaklık ve hedef noktasına göre çıkışı hesapla.
+       pidSicaklik.Compute();
+       analogWrite(triyakPin, (int)outputSicaklik); // PID çıkışını ısıtıcıya uygula (PWM)
+
+       // Basit otomatik-PID ayarlaması: Sıcaklık hatası önemliyse, Kp'yi hafifçe artır.
+       if (otoPIDaktif) {
+           static unsigned long lastPIDTune = 0;
+           if (millis() - lastPIDTune > 60000) { // Her dakika kontrol et
+               double error = abs(setpointSicaklik - inputSicaklik);
+               if (error > 1.0) { // Hata 1 dereceden büyükse
+                   double kp, ki, kd;
+                   pidSicaklik.GetTunings(&kp, &ki, &kd); // Mevcut ayarlamaları al
+                   kp = constrain(kp + 0.1, 1.0, 10.0); // Kp'yi hafifçe artır, limitlerle
+                   pidSicaklik.SetTunings(kp, ki, kd);  // Yeni ayarlamaları uygula
+               }
+               lastPIDTune = millis();
+           }
+       }
+   } else {
+       // PID aktif değilse, basit eşik tabanlı ON/OFF kontrolü kullan.
+       if (mevcutSicaklik < setpointSicaklik - 0.5) {
+           analogWrite(triyakPin, 200); // Isıtıcıyı AÇ (rastgele güç seviyesi)
+       } else if (mevcutSicaklik > setpointSicaklik + 0.5) {
+           analogWrite(triyakPin, 0); // Isıtıcıyı KAPAT
+       }
+   }
+}
+
+/**
+* @brief Hedef neme göre nemlendiriciyi/fanı kontrol eder.
+*/
+void kontrolNem() {
+   if (nemKontrolAktif) {
+       static unsigned long lastNemControl = 0; // Son nem kontrol eyleminin zaman damgası
+
+       if (millis() - lastNemControl > 5000) { // Her 5 saniyede bir nemi kontrol et
+           if (mevcutNem < targetNem - 2.0) {
+               digitalWrite(relayNemPin, HIGH); // Nem çok düşükse nemlendiriciyi AÇ
+           } else if (mevcutNem > targetNem + 2.0) {
+               digitalWrite(relayNemPin, LOW);  // Nem çok yüksekse nemlendiriciyi KAPAT
+           }
+           lastNemControl = millis();
+       }
+   } else {
+       digitalWrite(relayNemPin, LOW); // Nem kontrolü inaktifse nemlendiricinin KAPALI olduğundan emin ol
+   }
+}
+
+/**
+* @brief Otomatik yumurta çevirme mekanizmasını yönetir.
+*/
+void kontrolCevirmeOtomatik() {
+   unsigned long currentTime = millis();
+
+   if (cevirmeDurumu) { // Otomatik çevirmenin etkin olup olmadığını kontrol et
+       // Çevirme şu anda aktif değilse VE son çevirmeden bu yana yeterli zaman geçtiyse
+       if (!cevirmeCalisiyor && (currentTime - sonCevirmeZamani >= cevirmeAraligi)) {
+           cevirmeCalisiyor = true; // Çevirmenin devam ettiğini gösteren bayrağı ayarla
+           cevirmeBaslangicZamani = currentTime; // Çevirmenin başlangıç zamanını kaydet
+           digitalWrite(relayCevirmePin, HIGH); // Çevirme motoru rölesini etkinleştir
+
+           Serial.println(F("Çevirme başladı")); // Seri port'a logla
+
+           // İsteğe bağlı olarak çevirme bildirimi için zili etkinleştir
+           if (alarmAktif) {
+               for (int i = 0; i < 3; i++) { // 3 kez bip sesi çıkar
+                   digitalWrite(buzzerPin, HIGH); delay(100);
+                   digitalWrite(buzzerPin, LOW);  delay(100);
+               }
+           }
+       }
+
+       // Çevirme aktifse VE çevirme süresi dolduysa
+       if (cevirmeCalisiyor && (currentTime - cevirmeBaslangicZamani >= cevirmeSuresi)) {
+           cevirmeCalisiyor = false; // Çevirmenin tamamlandığını gösteren bayrağı ayarla
+           digitalWrite(relayCevirmePin, LOW); // Çevirme motoru rölesini devre dışı bırak
+           sonCevirmeZamani = currentTime;      // Tamamlanan bu çevirmenin zamanını kaydet
+
+           Serial.println(F("Çevirme tamamlandı")); // Seri port'a logla
+       }
+   } else {
+       // Otomatik çevirme devre dışı bırakılmışsa, motorun kapalı olduğundan emin ol.
+       if (cevirmeCalisiyor) {
+           cevirmeCalisiyor = false;
+           digitalWrite(relayCevirmePin, LOW);
+       }
+   }
+}
+
+/**
+* @brief Kuluçka makinesinin dahili ışığını kontrol eder.
+*/
+void kontrolAydinlatma() {
+   digitalWrite(lambaPin, aydinlatmaAktif ? HIGH : LOW); // Ayara göre ışığı AÇ/KAPA
+}
+
+/**
+* @brief Kritik alarmlar (sıcaklık/nem aralık dışında) için zili etkinleştirir.
+*/
+void kontrolAlarm() {
+   if (alarmAktif) { // Alarmların genel olarak etkin olup olmadığını kontrol et
+       static unsigned long lastAlarmCheck = 0; // Son alarm kontrolünün zaman damgası
+
+       if (millis() - lastAlarmCheck > 30000) { // Her 30 saniyede bir alarmları kontrol et
+           bool alarmDurumu = false; // Başlangıçta alarm olmadığını varsay
+
+           // Sıcaklığın hedef aralığın önemli ölçüde dışında olup olmadığını kontrol et
+           if (mevcutSicaklik < setpointSicaklik - 2.0 || mevcutSicaklik > setpointSicaklik + 2.0) {
+               alarmDurumu = true;
+           }
+
+           // Nemin hedef aralığın önemli ölçüde dışında olup olmadığını kontrol et
+           if (mevcutNem < targetNem - 10.0 || mevcutNem > targetNem + 10.0) {
+               alarmDurumu = true;
+           }
+
+           // Bir alarm durumu karşılanırsa zili etkinleştir
+           if (alarmDurumu) {
+               for (int i = 0; i < 5; i++) { // Alarm için 5 kez bip sesi çıkar
+                   digitalWrite(buzzerPin, HIGH); delay(200);
+                   digitalWrite(buzzerPin, LOW);  delay(200);
+               }
+           }
+           lastAlarmCheck = millis();
+       }
+   }
+   // alarmAktif false ise, zil bu fonksiyon tarafından etkinleştirilmez.
+}
+
+// =================================================================================================
+// EKRAN FONKSİYONLARI (OLED)
+// Bu fonksiyonlar, OLED ekranda görüntülenen içeriği yönetir.
+// =================================================================================================
+
+/**
+* @brief Ekranı temizler ve mevcut menü durumuna göre içeriği çizer.
+*/
+void updateDisplay() {
+   display.clearDisplay();       // Önceki içeriği temizle
+   display.setTextColor(SSD1306_WHITE); // Metin rengini ayarla
+
+   // Mevcut menü durumuna göre uygun görüntüleme fonksiyonunu çağır
+   switch (currentMenu) {
+       case MENU_ANA:
+           displayMainScreen();
+           break;
+       case MENU_HEDEF_AYARLAR:
+           displayHedefAyarlar();
+           break;
+       case MENU_3SN_MENU:
+           display3SnMenu();
+           break;
+   }
+
+   display.display(); // Arabellek içeriğini gerçek ekrana gönder
+}
+
+/**
+* @brief Mevcut sıcaklık, nem, RTC saati ve durum göstergeleri ile
+* ana çalışma ekranını görüntüler.
+*/
+void displayMainScreen() {
+   display.setTextSize(1); // Saat için küçük metin boyutu
+   display.setCursor(0, 0);
+
+   // RTC'den mevcut tarih ve saati göster
+   if (rtc.begin()) { // RTC'nin bağlı olup olmadığını kontrol et
+       DateTime now = rtc.now(); // Mevcut tarih ve saati al
+       // Tarihi biçimlendir ve yazdır (GG/AA/YYYY)
+       display.print(now.day() < 10 ? "0" : ""); display.print(now.day());
+       display.print("/");
+       display.print(now.month() < 10 ? "0" : ""); display.print(now.month());
+       display.print("/");
+       display.print(now.year());
+       display.print(" ");
+       // Saati biçimlendir ve yazdır (SS:DD)
+       display.print(now.hour() < 10 ? "0" : ""); display.print(now.hour());
+       display.print(":");
+       display.print(now.minute() < 10 ? "0" : ""); display.print(now.minute());
+   } else {
+       display.print(F("RTC Yok")); // RTC bulunamazsa hata göster
+   }
+
+   // Mevcut sıcaklığı göster
+   display.setTextSize(2);     // Ana okumalar için daha büyük metin
+   display.setCursor(0, 15);
+   display.print(F("S:"));     // "S" Sıcaklık için
+   display.print(mevcutSicaklik, 1); // Sıcaklığı 1 ondalık basamakla göster
+   display.print(F("C"));      // Santigrat
+
+   // Hedef sıcaklığı göster
+   display.setTextSize(1); // Hedef değerler için daha küçük metin
+   display.setCursor(85, 20);
+   display.print(F("H:"));     // "H" Hedef için
+   display.print(setpointSicaklik, 1);
+
+   // Mevcut nemi göster
+   display.setTextSize(2);
+   display.setCursor(0, 35);
+   display.print(F("N:"));     // "N" Nem için
+   display.print(mevcutNem, 0); // Nemi 0 ondalık basamakla göster
+   display.print(F("%"));      // Yüzde
+
+   // Hedef nemi göster
+   display.setTextSize(1);
+   display.setCursor(85, 40);
+   display.print(F("H:"));
+   display.print(targetNem, 0);
+
+   // Aktif sistem durumu göstergelerini göster
+   display.setCursor(0, 55); // Durum satırı için konum
+
+   if (pidAktif) {
+       display.print(F("PID ")); // PID'nin aktif olduğunu göster
+   }
+
+   if (cevirmeDurumu) {
+       display.print(F("CEV ")); // Otomatik çevirmenin etkin olduğunu göster
+   }
+
+   if (cevirmeCalisiyor) {
+       display.print(F(">>>")); // Yumurta çevirmenin şu anda devam ettiğini göster
+   }
+
+   if (nemKontrolAktif && digitalRead(relayNemPin) == HIGH) {
+       display.print(F("NEM")); // Nemlendirici/fanın şu anda aktif olduğunu göster
+   }
+
+   // Aktif ve şu anda çevirme yapılmıyorsa bir sonraki yumurta çevirmeye kalan süreyi göster
+   if (cevirmeDurumu && !cevirmeCalisiyor) {
+       unsigned long kalanZaman = cevirmeAraligi - (millis() - sonCevirmeZamani); // Kalan süreyi hesapla
+       int kalanSaat = kalanZaman / 3600000;         // Milisaniyeyi saatlere çevir
+       int kalanDakika = (kalanZaman % 3600000) / 60000; // Kalan milisaniyeyi dakikalara çevir
+
+       display.setCursor(85, 55);
+       display.print(F("C:")); // "C" Çevirme için
+       display.print(kalanSaat);
+       display.print(F(":"));
+       if (kalanDakika < 10) display.print(F("0")); // Dakikalar için önde sıfır ekle
+       display.print(kalanDakika);
+   }
+}
+
+/**
+* @brief Sıcaklık ve nem için "Hedef Ayarlar" menüsünü (Hedef Ayarlar) görüntüler.
+* Seçili öğeyi '>' önekiyle gösterir.
+*/
+void displayHedefAyarlar() {
+   display.setTextSize(1);
+   display.setCursor(0, 0);
+   display.println(F("HEDEF AYARLARI")); // Menü başlığı
+
+   // Menü öğeleri arasında döngü (Sıcaklık, Nem)
+   for (int i = 0; i < 2; i++) {
+       display.setCursor(0, 15 + i * 15); // Her öğe için imleç konumunu ayarla
+
+       if (i == menuSelectedItem) {
+           display.print(F("> ")); // Seçili öğeyi göster
+       } else {
+           display.print(F("  ")); // Seçili olmayan öğe
+       }
+
+       // Sıcaklık ayarını göster
+       if (i == 0) {
+           display.print(F("Sicaklik: "));
+           if (currentSubMenu == SUB_HEDEF_SICAKLIK) {
+               // Aktif olarak ayarlanıyorsa, değeri köşeli parantez içinde göster
+               display.print(F("["));
+               display.print(setpointSicaklik, 1);
+               display.print(F("]"));
+           } else {
+               display.print(setpointSicaklik, 1);
+           }
+           display.print(F("C"));
+       }
+       // Nem ayarını göster
+       else if (i == 1) {
+           display.print(F("Nem: "));
+           if (currentSubMenu == SUB_HEDEF_NEM) {
+               // Aktif olarak ayarlanıyorsa, değeri köşeli parantez içinde göster
+               display.print(F("["));
+               display.print(targetNem, 0);
+               display.print(F("]"));
+           } else {
+               display.print(targetNem, 0);
+           }
+           display.print(F("%"));
+       }
+   }
+
+   // Alt kısımda talimatları göster
+   display.setCursor(0, 55);
+   display.print(F("SET:Sec UP/DN:Degis"));
+}
+
+/**
+* @brief "Gelişmiş Ayarlar" menüsünü (GELISMIS AYARLAR) görüntüler.
+* Ekrana sığmayan öğeler varsa kaydırmayı destekler.
+*/
+void display3SnMenu() {
+   display.setTextSize(1);
+   display.setCursor(0, 0);
+   display.println(F("GELISMIS AYARLAR")); // Menü başlığı
+
+   // Menü öğesi adlarının dizisi
+   const char* menuItems[] = {
+       "Kalibrasyon",
+       "PID Ayarlari",
+       "Cevirme Ayar",
+       "Nem Kontrolu",
+       "Aydinlatma",
+       "Alarm Ayari"
+   };
+   int totalMenuItems = sizeof(menuItems) / sizeof(menuItems[0]);
+
+   // Kaydırma menüsü için başlangıç indeksini hesapla
+   // Seçili öğenin görünür olduğundan emin olarak bir seferde en fazla 4 öğe gösterir
+   int startIndex = max(0, menuSelectedItem - 3);
+   for (int i = 0; i < 4 && (startIndex + i) < totalMenuItems; i++) {
+       int itemIndex = startIndex + i; // Görüntülenecek mevcut öğe
+       display.setCursor(0, 12 + i * 12); // Her öğe için konum
+
+       if (itemIndex == menuSelectedItem) {
+           display.print(F("> ")); // Seçili öğeyi göster
+       } else {
+           display.print(F("  ")); // Seçili olmayan öğe
+       }
+
+       display.print(menuItems[itemIndex]); // Menü öğesi adını yazdır
+
+       // Bir alt menü aktifse ve seçili öğe ile eşleşiyorsa,
+       // ekranı temizle ve alt menü içeriğini oluştur.
+       if (currentSubMenu != SUB_MENU_NONE && itemIndex == menuSelectedItem) {
+           displaySubMenu(itemIndex); // Alt menü görüntüleme fonksiyonuna devret
+           break; // Bir alt menüye girildiğinde ana menü öğelerini çizmeyi durdur
+       }
+   }
+}
+
+/**
+* @brief Ana menü öğesi indeksine göre belirli alt menü görüntüleme fonksiyonuna devret.
+* Alt menüyü oluşturmadan önce ekranı temizler.
+* @param mainMenuIndex Ana menüdeki seçili öğenin indeksi (Kalibrasyon için 0, PID için 1 vb.)
+*/
+void displaySubMenu(int mainMenuIndex) {
+   display.clearDisplay();       // Alt menü içeriği için ekranı temizle
+   display.setTextSize(1);       // Alt menüler için varsayılan metin boyutu
+
+   switch (mainMenuIndex) {
+       case 0: // Kalibrasyon
+           displayKalibrasyonMenu();
+           break;
+       case 1: // PID Ayarları
+           displayPIDMenu();
+           break;
+       case 2: // Yumurta Çevirme Ayarları
+           displayCevirmeMenu();
+           break;
+       case 3: // Nem Kontrolü Aç/Kapa
+           display.setCursor(0, 0);
+           display.println(F("NEM KONTROLU"));
+           display.setCursor(0, 20);
+           display.print(F("Durum: "));
+           display.println(nemKontrolAktif ? F("AKTIF") : F("PASIF")); // Mevcut durumu göster
+           break;
+       case 4: // Aydınlatma Aç/Kapa
+           display.setCursor(0, 0);
+           display.println(F("AYDINLATMA"));
+           display.setCursor(0, 20);
+           display.print(F("Durum: "));
+           display.println(aydinlatmaAktif ? F("ACIK") : F("KAPALI")); // Mevcut durumu göster
+           break;
+       case 5: // Alarm Aç/Kapa
+           display.setCursor(0, 0);
+           display.println(F("ALARM AYARI"));
+           display.setCursor(0, 20);
+           display.print(F("Durum: "));
+           display.println(alarmAktif ? F("AKTIF") : F("PASIF")); // Mevcut durumu göster
+           break;
+   }
+}
+
+/**
+* @brief Kalibrasyon alt menüsünü görüntüler.
+* Sıcaklık veya nem kalibrasyonunu seçmeye ve ofsetleri ayarlamaya olanak tanır.
+*/
+void displayKalibrasyonMenu() {
+   display.setCursor(0, 0);
+   display.println(F("KALIBRASYON")); // Alt menü başlığı
+
+   if (kalibrasyonState == KALIBRASYON_ANA) {
+       // Başlangıç seçeneklerini göster (Sıcaklık, Nem)
+       const char* items[] = {"Sicaklik", "Nem"};
+       for (int i = 0; i < 2; i++) {
+           display.setCursor(0, 15 + i * 15);
+           if (i == subMenuSelectedItem) {
+               display.print(F("> ")); // Seçili öğeyi göster
+           } else {
+               display.print(F("  "));
+           }
+           display.println(items[i]);
+       }
+   } else if (kalibrasyonState == KALIBRASYON_SICAKLIK) {
+       // Sıcaklık kalibrasyon ayarlama ekranını göster
+       display.setCursor(0, 20);
+       display.print(F("Sicaklik Ofset:"));
+       display.setCursor(0, 35);
+       display.print(F("["));
+       display.print(sicaklikKalibrasyon, 1); // Mevcut ofseti göster
+       display.print(F("] C"));
+   } else if (kalibrasyonState == KALIBRASYON_NEM) {
+       // Nem kalibrasyon ayarlama ekranını göster
+       display.setCursor(0, 20);
+       display.print(F("Nem Ofset:"));
+       display.setCursor(0, 35);
+       display.print(F("["));
+       display.print(nemKalibrasyon, 0); // Mevcut ofseti göster
+       display.print(F("] %"));
+   }
+}
+
+/**
+* @brief PID Ayarları alt menüsünü görüntüler.
+* PID kontrolünü ve Otomatik-PID ayarlamasını değiştirmeye olanak tanır.
+*/
+void displayPIDMenu() {
+   display.setCursor(0, 0);
+   display.println(F("PID AYARLARI")); // Alt menü başlığı
+
+   if (pidState == PID_ANA) {
+       // Başlangıç seçeneklerini göster (PID Aç/Kapa, Otomatik PID)
+       const char* items[] = {"PID On/Off", "Oto PID"};
+       for (int i = 0; i < 2; i++) {
+           display.setCursor(0, 15 + i * 15);
+           if (i == subMenuSelectedItem) {
+               display.print(F("> ")); // Seçili öğeyi göster
+           } else {
+               display.print(F("  "));
+           }
+           display.println(items[i]);
+       }
+   } else if (pidState == PID_ON_OFF) {
+       // PID aktif durum ayarlama ekranını göster
+       display.setCursor(0, 20);
+       display.print(F("PID Durum:"));
+       display.setCursor(0, 35);
+       display.print(F("["));
+       display.print(pidAktif ? F("AKTIF") : F("PASIF")); // Mevcut durumu göster
+       display.print(F("]"));
+   } else if (pidState == PID_OTO) {
+       // Otomatik-PID aktif durum ayarlama ekranını göster
+       display.setCursor(0, 20);
+       display.print(F("Oto PID:"));
+       display.setCursor(0, 35);
+       display.print(F("["));
+       display.print(otoPIDaktif ? F("AKTIF") : F("PASIF")); // Mevcut durumu göster
+       display.print(F("]"));
+   }
+}
+
+/**
+* @brief Yumurta Çevirme Ayarları alt menüsünü görüntüler.
+* Çevirmeyi açıp kapatmaya ve aralık ile süreyi S/D/S cinsinden ayarlamaya olanak tanır.
+*/
+void displayCevirmeMenu() {
+   display.setCursor(0, 0);
+   display.println(F("CEVIRME AYAR")); // Alt menü başlığı
+
+   if (cevirmeState == CEVIRME_ANA) {
+       // Başlangıç seçeneklerini göster
+       const char* items[] = {
+           "On/Off", "Aralik H", "Aralik M", "Aralik S",
+           "Sure H", "Sure M", "Sure S"
+       };
+       int totalCevirmeItems = sizeof(items) / sizeof(items[0]);
+
+       // Kaydırma için başlangıç indeksini hesapla (bir seferde en fazla 4 öğe gösterir)
+       int startIdx = max(0, subMenuSelectedItem - 3);
+       for (int i = 0; i < 4 && (startIdx + i) < totalCevirmeItems; i++) {
+           int idx = startIdx + i; // Görüntülenecek mevcut öğe
+           display.setCursor(0, 12 + i * 12);
+
+           if (idx == subMenuSelectedItem) {
+               display.print(F("> ")); // Seçili öğeyi göster
+           } else {
+               display.print(F("  "));
+           }
+           display.print(items[idx]); // Öğenin adını yazdır
+
+           // Her ayar için mevcut değeri yazdır
+           if (idx == 0) { // Aç/Kapa durumu
+               display.print(F(": ")); display.print(cevirmeDurumu ? F("ON") : F("OFF"));
+           } else if (idx == 1) { // Aralık Saat
+               display.print(F(": ")); display.print(cevirmeAralikSaat);
+           } else if (idx == 2) { // Aralık Dakika
+               display.print(F(": ")); display.print(cevirmeAralikDakika);
+           } else if (idx == 3) { // Aralık Saniye
+               display.print(F(": ")); display.print(cevirmeAralikSaniye);
+           } else if (idx == 4) { // Süre Saat
+               display.print(F(": ")); display.print(cevirmeSureSaat);
+           } else if (idx == 5) { // Süre Dakika
+               display.print(F(": ")); display.print(cevirmeSureDakika);
+           } else if (idx == 6) { // Süre Saniye
+               display.print(F(": ")); display.print(cevirmeSureSaniye);
+           }
+       }
+   } else {
+       // Belirli zaman bileşeni ayarlama ekranını göster (daha büyük metin)
+       display.setTextSize(2);
+       display.setCursor(20, 25);
+       display.print(F("[")); // Değer için açılış parantezi
+
+       // Aktif çevirme durumuna göre mevcut değeri göster
+       if (cevirmeState == CEVIRME_ARALIK_SAAT) {
+           display.print(cevirmeAralikSaat);
+           display.setCursor(0, 50); display.setTextSize(1); display.print(F("Aralik Saat"));
+       } else if (cevirmeState == CEVIRME_ARALIK_DAKIKA) {
+           display.print(cevirmeAralikDakika);
+           display.setCursor(0, 50); display.setTextSize(1); display.print(F("Aralik Dakika"));
+       } else if (cevirmeState == CEVIRME_ARALIK_SANIYE) {
+           display.print(cevirmeAralikSaniye);
+           display.setCursor(0, 50); display.setTextSize(1); display.print(F("Aralik Saniye"));
+       } else if (cevirmeState == CEVIRME_SURE_SAAT) {
+           display.print(cevirmeSureSaat);
+           display.setCursor(0, 50); display.setTextSize(1); display.print(F("Sure Saat"));
+       } else if (cevirmeState == CEVIRME_SURE_DAKIKA) {
+           display.print(cevirmeSureDakika);
+           display.setCursor(0, 50); display.setTextSize(1); display.print(F("Sure Dakika"));
+       } else if (cevirmeState == CEVIRME_SURE_SANIYE) {
+           display.print(cevirmeSureSaniye);
+           display.setCursor(0, 50); display.setTextSize(1); display.print(F("Sure Saniye"));
+       }
+
+       display.setTextSize(2);
+       display.print(F("]")); // Kapanış parantezi
+   }
+}
+
+// =================================================================================================
+// EEPROM FONKSİYONLARI
+// Bu fonksiyonlar, sistem ayarlarını kalıcı belleğe kaydetme ve oradan yüklemeyi yönetir.
+// =================================================================================================
+
+/**
+* @brief Tüm mevcut sistem ayarlarını EEPROM'a kaydeder.
+* Başarılı başlatmayı belirtmek için bir bayrak (EEPROM_INIT_FLAG) yazılır.
+*/
+void kaydetEEPROM() {
+   EEPROM.put(EEPROM_SICAKLIK_HEDEF, setpointSicaklik);
+   EEPROM.put(EEPROM_NEM_HEDEF, targetNem);
+   EEPROM.put(EEPROM_SICAKLIK_KALIBRASYON, sicaklikKalibrasyon);
+   EEPROM.put(EEPROM_NEM_KALIBRASYON, nemKalibrasyon);
+   EEPROM.put(EEPROM_PID_DURUMU, pidAktif);
+   EEPROM.put(EEPROM_OTO_PID_DURUMU, otoPIDaktif);
+   EEPROM.put(EEPROM_CEVIRME_DURUMU, cevirmeDurumu);
+   EEPROM.put(EEPROM_CEVIRME_ARALIGI, cevirmeAraligi);
+   EEPROM.put(EEPROM_CEVIRME_SURESI, cevirmeSuresi);
+   EEPROM.put(EEPROM_NEM_KONTROL_DURUMU, nemKontrolAktif);
+   EEPROM.put(EEPROM_AYDINLATMA_DURUMU, aydinlatmaAktif);
+   EEPROM.put(EEPROM_ALARM_DURUMU, alarmAktif);
+   EEPROM.put(EEPROM_INIT_FLAG, 0xAA); // Başlatma bayrağını yaz
+}
+
+/**
+* @brief Sistem ayarlarını EEPROM'dan okur.
+* Başlatma bayrağı bulunamazsa (ilk önyükleme veya bozuk EEPROM),
+* varsayılan ayarları yüklemek için `resetToDefaults()` çağırır.
+* Ayrıca yüklenen değerleri güvenli çalışma aralıklarında sınırlar.
+*/
+void okuEEPROM() {
+   byte initFlag;
+   EEPROM.get(EEPROM_INIT_FLAG, initFlag); // Başlatma bayrağını oku
+
+   // Bayrak eşleşmiyorsa, EEPROM başlatılmamış veya bozuk demektir.
+   if (initFlag != 0xAA) {
+       Serial.println(F("EEPROM boş veya bozuk, varsayılan ayarlara sıfırlanıyor."));
+       resetToDefaults(); // Varsayılan ayarları yükle
+       return; // Fonksiyondan çık
+   }
+
+   // Tüm ayarları EEPROM'dan oku
+   EEPROM.get(EEPROM_SICAKLIK_HEDEF, setpointSicaklik);
+   EEPROM.get(EEPROM_NEM_HEDEF, targetNem);
+   EEPROM.get(EEPROM_SICAKLIK_KALIBRASYON, sicaklikKalibrasyon);
+   EEPROM.get(EEPROM_NEM_KALIBRASYON, nemKalibrasyon);
+   EEPROM.get(EEPROM_PID_DURUMU, pidAktif);
+   EEPROM.get(EEPROM_OTO_PID_DURUMU, otoPIDaktif);
+   EEPROM.get(EEPROM_CEVIRME_DURUMU, cevirmeDurumu);
+   EEPROM.get(EEPROM_CEVIRME_ARALIGI, cevirmeAraligi);
+   EEPROM.get(EEPROM_CEVIRME_SURESI, cevirmeSuresi);
+   EEPROM.get(EEPROM_NEM_KONTROL_DURUMU, nemKontrolAktif);
+   EEPROM.get(EEPROM_AYDINLATMA_DURUMU, aydinlatmaAktif);
+   EEPROM.get(EEPROM_ALARM_DURUMU, alarmAktif);
+
+   // Yüklenen değerleri güvenli ve mantıklı aralıklar içinde olacak şekilde sınırla.
+   // Bu, EEPROM verileri bozulursa düzensiz davranışı önler.
+   setpointSicaklik = constrain(setpointSicaklik, 35.0, 42.0);
+   targetNem = constrain(targetNem, 40.0, 80.0);
+   sicaklikKalibrasyon = constrain(sicaklikKalibrasyon, -5.0, 5.0);
+   nemKalibrasyon = constrain(nemKalibrasyon, -20.0, 20.0);
+
+   // Çevirme aralık saat, dakika ve saniye bileşenlerini yüklenen toplam milisaniyeden hesapla
+   cevirmeAralikSaat = cevirmeAraligi / 3600000UL;
+   cevirmeAralikDakika = (cevirmeAraligi % 3600000UL) / 60000UL;
+   cevirmeAralikSaniye = (cevirmeAraligi % 60000UL) / 1000UL;
+
+   cevirmeSureSaat = cevirmeSuresi / 3600000UL;
+   cevirmeSureDakika = (cevirmeSuresi % 3600000UL) / 60000UL;
+   cevirmeSureSaniye = (cevirmeSuresi % 60000UL) / 1000UL;
+
+   hesaplaCevirmeZamanlari(); // `cevirmeAraligi` ve `cevirmeSuresi`'nin tutarlı olduğundan emin ol
+                              // (Eğer bileşenler de kaydedilip yüklenmiş olsaydı,
+                              // bu noktada onlardan hesaplama yapılırdı).
+                              // Mevcut EEPROM yapınız toplam milisaniyeyi kaydettiği için,
+                              // bu esas olarak ekran tutarlılığı içindir.
+}
+
+/**
+* @brief Tüm sistem ayarlarını önceden tanımlanmış varsayılan değerlerine sıfırlar.
+* Bu genellikle ilk önyüklemede veya EEPROM verileri geçersiz olduğunda çağrılır.
+*/
+void resetToDefaults() {
+   // Tüm parametreler için varsayılan değerleri ayarla
+   setpointSicaklik = 37.8;
+   targetNem = 55.0;
+   sicaklikKalibrasyon = 0.0;
+   nemKalibrasyon = 0.0;
+   pidAktif = true;
+   otoPIDaktif = false;
+   cevirmeDurumu = true;
+   cevirmeAraligi = 7200000; // 2 saat ms cinsinden
+   cevirmeSuresi = 15000;    // 15 saniye ms cinsinden
+   nemKontrolAktif = true;
+   aydinlatmaAktif = false;
+   alarmAktif = true;
+
+   // Çevirme zamanları için ekran bileşenlerini de varsayılanlara uygun olarak güncelle
+   cevirmeAralikSaat = 2;
+   cevirmeAralikDakika = 0;
+   cevirmeAralikSaniye = 0;
+   cevirmeSureSaat = 0;
+   cevirmeSureDakika = 0;
+   cevirmeSureSaniye = 15;
+
+   kaydetEEPROM(); // Bu varsayılan ayarları EEPROM'a kaydet
+}
+
+// =================================================================================================
+// SİSTEM İZLEME VE HATA YÖNETİMİ FONKSİYONLARI
+// =================================================================================================
+
+/**
+* @brief Periyodik olarak mevcut sistem durumunun ayrıntılı bir raporunu Seri Port'a yazdırır.
+* Hata ayıklama ve izleme için faydalıdır.
+*/
+void sistemDurumuRapor() {
+   static unsigned long lastReport = 0; // Son raporun zaman damgası
+
+   if (millis() - lastReport > 60000) { // Her 60 saniyede bir raporla
+       Serial.println(F("=== SISTEM DURUMU ==="));
+       Serial.print(F("Sicaklik: ")); Serial.print(mevcutSicaklik, 1); Serial.print(F("°C (Hedef: ")); Serial.print(setpointSicaklik, 1); Serial.println(F("°C)"));
+       Serial.print(F("Nem: ")); Serial.print(mevcutNem, 0); Serial.print(F("% (Hedef: ")); Serial.print(targetNem, 0); Serial.println(F("%)"));
+       Serial.print(F("PID Aktif: ")); Serial.println(pidAktif ? F("EVET") : F("HAYIR"));
+       Serial.print(F("Oto PID Aktif: ")); Serial.println(otoPIDaktif ? F("EVET") : F("HAYIR"));
+       Serial.print(F("Cevirme Aktif: ")); Serial.println(cevirmeDurumu ? F("EVET") : F("HAYIR"));
+       Serial.print(F("Cevirme Calisiyor: ")); Serial.println(cevirmeCalisiyor ? F("EVET") : F("HAYIR"));
+       Serial.print(F("Nem Kontrolu: ")); Serial.println(nemKontrolAktif ? F("AKTIF") : F("PASIF"));
+       Serial.print(F("Aydinlatma: ")); Serial.println(aydinlatmaAktif ? F("ACIK") : F("KAPALI"));
+       Serial.print(F("Alarm: ")); Serial.println(alarmAktif ? F("AKTIF") : F("PASIF"));
+
+       if (cevirmeDurumu && !cevirmeCalisiyor) {
+           unsigned long kalanZaman = cevirmeAraligi - (millis() - sonCevirmeZamani);
+           Serial.print(F("Sonraki cevirme: ")); Serial.print(kalanZaman / 1000); Serial.println(F(" saniye"));
+       }
+
+       Serial.println(F("=================="));
+       lastReport = millis();
+   }
+}
+
+/**
+* @brief Sensör verileri ve kritik koşullar için periyodik hata kontrolleri yapar.
+* Kritik hatalar veya uyarılar algılanırsa sesli alarmları tetikler.
+*/
+void hataKontrol() {
+   static unsigned long lastErrorCheck = 0; // Son hata kontrolünün zaman damgası
+
+   if (millis() - lastErrorCheck > 10000) { // Her 10 saniyede bir hataları kontrol et
+       bool hataVar = false; // Herhangi bir kritik hata bulunup bulunmadığını gösteren bayrak
+
+       // Geçersiz sensör verilerini kontrol et (NaN = Sayı Değil)
+       if (isnan(mevcutSicaklik) || isnan(mevcutNem)) {
+           Serial.println(F("HATA: Sensor verisi alinamiyor!"));
+           hataVar = true;
+       }
+
+       // Tehlikeli derecede yüksek sıcaklığı kontrol et
+       if (mevcutSicaklik > 50.0) {
+           Serial.println(F("HATA: Asiri sicaklik! Isıtıcı kapatılıyor."));
+           analogWrite(triyakPin, 0); // Isıtıcının acil kapatılması
+           hataVar = true;
+       }
+
+       // Çok düşük sıcaklık için uyarı (kritik kapatma değil, ancak dikkate değer)
+       if (mevcutSicaklik < 15.0) {
+           Serial.println(F("UYARI: Cok dusuk sicaklik!"));
+           // İstenirse burada farklı, daha az acil bir zil deseni eklenebilir
+       }
+
+       // RTC bağlantısını kontrol et
+       if (!rtc.begin()) { // rtc.begin() yeniden başlatma/algılama dener
+           Serial.println(F("UYARI: RTC baglantisi yok veya kesildi!"));
+       }
+
+       // Kritik bir hata bulunursa VE alarmlar aktifse, zili etkinleştir.
+       if (hataVar && alarmAktif) {
+           for (int i = 0; i < 10; i++) { // Uzun, tekrarlayan zil alarmı
+               digitalWrite(buzzerPin, HIGH); delay(100);
+               digitalWrite(buzzerPin, LOW);  delay(100);
+           }
+       }
+
+       lastErrorCheck = millis(); // Son hata kontrolünün zaman damgasını güncelle
+   }
+}
+
+/*
+* @brief Bu fonksiyon (watchdogReset) orijinal kodunuzda mevcuttu.
+* `esp_task_wdt_reset()` kullanır, bu da ESP32 mikrodenetleyicilerine özeldir.
+* Standart Arduino kartları (Uno, Nano, Mega gibi) bu fonksiyona sahip değildir.
+*
+* Eğer gerçekten bir ESP32 kullanıyorsanız, Arduino IDE'nizde ESP32 çekirdeğinin
+* kurulu olduğundan ve taslağın bir ESP32 kartı için derlendiğinden emin olmanız gerekir.
+*
+* ATmega328P tabanlı kartlar için, `<avr/wdt.h>` kütüphanesi kullanılarak
+* `wdt_enable()` ve `wdt_reset()` gibi fonksiyonlarla bir watchdog zamanlayıcı
+* uygulanabilir. Ancak bu, uzun gecikmelerden önce dikkatli kullanım ve devre dışı bırakma gerektirir.
+*
+* Bu fonksiyonu, standart Arduino kartlarında derlemeyi sağlamak için yorum satırı yaptım.
+* Bir ESP32 kullanıyorsanız veya ATmega'ya özel bir watchdog uygulayacaksanız, yorum satırını kaldırın ve uyarlayın.
+*
+void watchdogReset() {
+   static unsigned long lastWatchdog = 0;
+
+   if (millis() - lastWatchdog > 1000) {
+       // esp_task_wdt_reset(); // Bu satır ESP32'ye özeldir!
+       lastWatchdog = millis();
+   }
+}
+*/
