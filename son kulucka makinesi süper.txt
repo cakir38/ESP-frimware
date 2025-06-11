@@ -1,0 +1,1298 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kuluçka Kontrol Sistemi</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Boxicons CSS for Icons (Ekstra ikonlar için kullanılacak) -->
+    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet">
+    <!-- Google Fonts - Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        /* Kök değişkenleri tanımlanıyor */
+        :root {
+            --primary: #2b50aa;
+            --secondary: #ffc947;
+            --success: #28a745;
+            --warning: #ffc107;
+            --danger: #dc3545;
+            --info-bg: #e0f2f7; /* Yeni bilgi sayfası arka planı */
+            --info-text: #2196f3; /* Yeni bilgi sayfası metin rengi */
+            --dark-blue: #1a237e;
+        }
+
+        /* Genel body stilleri */
+        body {
+            background: linear-gradient(135deg, #f5f7fa 0%, #e4e8ef 100%);
+            min-height: 100vh;
+            font-family: "Inter", sans-serif; /* Inter font ekleniyor */
+            color: #333; /* Genel metin rengi */
+        }
+
+        /* Navbar stilleri */
+        .navbar {
+            background: linear-gradient(45deg, var(--primary), var(--dark-blue)) !important;
+            padding: 1rem 0;
+            border-bottom-left-radius: 20px;
+            border-bottom-right-radius: 20px;
+        }
+
+        .navbar-brand {
+            color: #fff !important;
+            font-size: 1.8rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        /* Sekme konteyner stilleri */
+        .tab-container {
+            background: white;
+            border-radius: 20px; /* Daha yuvarlak köşeler */
+            padding: 25px; /* Daha fazla iç boşluk */
+            box-shadow: 0 8px 30px rgba(0,0,0,0.15); /* Daha belirgin gölge */
+            margin-bottom: 30px;
+            overflow: hidden; /* İçerik taşmasını engelle */
+        }
+
+        /* Sekme navigasyon stilleri */
+        .nav-tabs {
+            border: none;
+            margin-bottom: 25px; /* Daha fazla boşluk */
+            justify-content: center; /* Ortala */
+            background: #f0f4f8; /* Hafif gri arka plan */
+            border-radius: 15px;
+            padding: 5px;
+        }
+
+        .nav-tabs .nav-item {
+            flex-grow: 1; /* Sekmeleri eşit genişlikte yap */
+            text-align: center;
+        }
+
+        .nav-tabs .nav-link {
+            border: none;
+            color: #666;
+            font-weight: 600; /* Daha kalın font */
+            padding: 12px 25px; /* Daha geniş dolgu */
+            border-radius: 12px; /* Daha yuvarlak köşeler */
+            margin: 0 5px; /* Sekmeler arası boşluk */
+            transition: all 0.3s ease; /* Yumuşak geçişler */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px; /* İkon ile yazı arasına boşluk */
+            font-size: 1.05rem;
+        }
+
+        .nav-tabs .nav-link.active {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 5px 15px rgba(43, 80, 170, 0.4); /* Aktif sekmeye belirgin gölge */
+            transform: translateY(-2px); /* Hafif yukarı kayma */
+        }
+        .nav-tabs .nav-link .icon-emoji {
+            font-size: 1.2rem; /* Emoji boyutunu artır */
+        }
+
+
+        /* Durum kartı stilleri (genel) */
+        .status-card {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        /* Değer kutusu stilleri (Sıcaklık/Nem) */
+        .value-box {
+            background: linear-gradient(45deg, var(--primary), var(--dark-blue));
+            color: white;
+            border-radius: 15px; /* Daha yuvarlak köşeler */
+            padding: 20px; /* Daha fazla iç boşluk */
+            text-align: center;
+            margin-bottom: 20px;
+            box-shadow: 0 6px 15px rgba(0,0,0,0.25); /* Daha belirgin gölge */
+            transition: transform 0.3s ease; /* Hover efekti için geçiş */
+        }
+
+        .value-box:hover {
+            transform: translateY(-5px) scale(1.01);
+        }
+
+        .value-box .value {
+            font-size: 3rem; /* Daha büyük font */
+            font-weight: bold;
+            margin-bottom: 5px; /* Değer ile etiket arasına boşluk */
+        }
+
+        .value-box .label {
+            font-size: 1.1rem; /* Daha büyük font */
+            opacity: 0.9;
+        }
+
+        /* Canlı ikon animasyonu */
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.05); opacity: 0.8; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+
+        .value-box .icon-emoji {
+            font-size: 3rem; /* Emojiler için ikon boyutu */
+            animation: pulse 2s infinite ease-in-out; /* İkonlara nabız efekti */
+        }
+        .value-box i {
+            font-size: 3rem; /* Boxicons için ikon boyutu */
+            animation: pulse 2s infinite ease-in-out; /* İkonlara nabız efekti */
+        }
+
+        /* Kontrol butonu stilleri */
+        .control-btn {
+            width: 90px; /* Daha büyük butonlar */
+            height: 90px;
+            border-radius: 50%;
+            border: none;
+            background: white;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.15); /* Daha belirgin gölge */
+            margin: 15px; /* Daha fazla boşluk */
+            transition: all 0.3s ease; /* Yumuşak geçişler */
+            display: inline-flex; /* İçeriği ortalamak için */
+            align-items: center;
+            justify-content: center;
+            cursor: pointer; /* Fare imleci değişimi */
+            user-select: none; /* Metin seçimi engelleme */
+        }
+
+        .control-btn .icon-emoji {
+            font-size: 3rem; /* Emoji boyutu */
+            color: #666; /* Pasif ikon rengi */
+        }
+        .control-btn i {
+            font-size: 3rem; /* Boxicon boyutu */
+            color: #666; /* Pasif ikon rengi */
+        }
+
+        .control-btn:hover {
+            transform: translateY(-8px) scale(1.1); /* Daha belirgin hover efekti */
+            box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+        }
+
+        /* Aydınlatma butonu aktif stilleri (sarı) */
+        #lightBtn.active {
+            background: var(--secondary);
+            color: white;
+            box-shadow: 0 4px 15px rgba(255, 201, 71, 0.5);
+        }
+
+        #lightBtn.active .icon-emoji, #lightBtn.active i {
+            color: white;
+        }
+
+        /* Çevirme butonu aktif stilleri (yeşil) */
+        #turnBtn.active {
+            background: var(--success);
+            color: white;
+            box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);
+        }
+
+        #turnBtn.active .icon-emoji, #turnBtn.active i {
+            color: white;
+        }
+
+        /* Ayarlar ve Kalibrasyon kartları stilleri */
+        .settings-card {
+            background: white;
+            border-radius: 15px;
+            padding: 30px; /* Daha fazla iç boşluk */
+            margin-bottom: 25px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+        }
+
+        /* Saat göstergesi stilleri */
+        .time-display {
+            background: rgba(255,255,255,0.2);
+            padding: 10px 20px;
+            border-radius: 15px;
+            color: white;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 8px; /* İkon ile yazı arasına boşluk */
+        }
+
+        /* Form elemanları stilleri */
+        .form-label {
+            font-weight: 600; /* Daha kalın etiketler */
+            margin-bottom: 10px; /* Etiket altına boşluk */
+            color: #555;
+        }
+
+        .form-control, .input-group-text {
+            border-radius: 10px; /* Daha yuvarlak köşeler */
+            padding: 10px 15px;
+            border-color: #ddd;
+        }
+
+        .form-control:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 0.25rem rgba(43, 80, 170, 0.25);
+        }
+
+        .input-group-text {
+            background-color: #f8f9fa;
+            color: #555;
+        }
+
+        /* Toast mesajları için stil */
+        .toast-container {
+            z-index: 9999;
+            position: fixed; /* Ensures toast is always visible */
+            top: 20px;
+            right: 20px;
+        }
+
+        .toast {
+            background-color: #fff;
+            border-radius: 15px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.18);
+            border: none;
+            overflow: hidden; /* İçerik taşmasını engelle */
+        }
+
+        .toast-header {
+            background-color: var(--primary); /* Bilgi için primary */
+            color: white;
+            border-bottom: none;
+            padding: 12px 15px;
+            font-weight: 600;
+        }
+
+        .toast.bg-success .toast-header { background-color: var(--success); }
+        .toast.bg-danger .toast-header { background-color: var(--danger); }
+        .toast.bg-warning .toast-header { background-color: var(--warning); }
+        .toast.bg-info .toast-header { background-color: var(--primary); } /* Info toast primary renkte */
+
+        .toast-header .bx {
+            font-size: 1.3rem;
+            margin-right: 8px;
+        }
+
+        .toast-body {
+            color: #333;
+            padding: 15px;
+        }
+
+        .btn-close {
+            filter: brightness(0) invert(1); /* Kapatma ikonunu beyaz yap */
+            font-size: 1rem;
+        }
+
+        /* Kuluçka Takibi ve Cihaz Durumu kutuları */
+        .kulucka-takip-box, .cihaz-durumu-box, .info-card {
+            background: #e6f2ff; /* Açık mavi tonu */
+            border-radius: 18px; /* Daha yuvarlak köşeler */
+            padding: 25px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+            color: #333;
+            margin-top: 25px; /* Üstten boşluk */
+        }
+
+        .kulucka-takip-box h5, .cihaz-durumu-box h5, .info-card h5 {
+            color: var(--primary);
+            font-weight: 700; /* Daha kalın başlık */
+            margin-bottom: 20px; /* Başlık altına boşluk */
+            font-size: 1.4rem;
+        }
+
+        .kulucka-takip-box .icon-emoji, .cihaz-durumu-box .icon-emoji, .info-card .icon-emoji {
+            margin-right: 8px; /* İkon ile yazı arasına boşluk */
+            color: var(--primary);
+            font-size: 1.2rem;
+        }
+        .kulucka-takip-box i, .cihaz-durumu-box i, .info-card i {
+            margin-right: 8px; /* İkon ile yazı arasına boşluk */
+            color: var(--primary);
+            font-size: 1.2rem;
+        }
+
+        /* Kalibrasyon Açıklama Bölümü */
+        .calibration-info-box {
+            background: #fff8e1; /* Sarımsı arka plan */
+            border-left: 5px solid var(--warning);
+            border-radius: 10px;
+            padding: 15px 20px;
+            margin-bottom: 25px;
+            color: #555;
+        }
+
+        .calibration-info-box p {
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+
+        .calibration-info-box strong {
+            color: #c79100;
+        }
+
+        /* Bilgi sayfası kartı */
+        .info-card {
+            background: #e6f2ff; /* Açık mavi */
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.1);
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        .info-card .system-info-version {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 25px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(0,0,0,0.1);
+        }
+
+        .info-card .contact-detail {
+            font-size: 1.1rem;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            color: #555;
+        }
+
+        .info-card .contact-detail .icon-emoji, .info-card .contact-detail i {
+            font-size: 1.5rem;
+            color: var(--primary);
+        }
+
+        .info-card .contact-detail a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .info-card .contact-detail a:hover {
+            text-decoration: underline;
+        }
+
+        .info-card .company-name {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--primary);
+            margin-top: 25px;
+            padding-top: 15px;
+            border-top: 1px solid rgba(0,0,0,0.1);
+        }
+
+        /* OTA Butonu özelleştirme */
+        .ota-btn-container {
+            text-align: center;
+            margin-top: 25px; /* Yeni konuma göre boşluk ayarı */
+        }
+
+        .ota-update-btn {
+            padding: 12px 30px;
+            font-size: 1.1rem;
+            border-radius: 10px;
+            background-color: var(--primary);
+            color: white;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(43, 80, 170, 0.3);
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            text-decoration: none; /* Link gibi davranmasın diye */
+            border: none; /* Buton olduğu için border olmasın */
+        }
+
+        .ota-update-btn:hover {
+            background-color: var(--dark-blue); /* Koyu mavi hover */
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(43, 80, 170, 0.4);
+        }
+
+        .ota-update-btn .button-icon { /* Boxicon veya Emoji span'ı için */
+            font-size: 1.5rem;
+        }
+        .ota-update-btn .bx.button-icon { /* Boxicon */
+            font-size: 1.5rem;
+        }
+        .ota-update-btn .icon-emoji { /* Emoji */
+            font-size: 1.5rem;
+        }
+
+        /* Gizlenecek/Gösterilecek Bölümler */
+        .collapsible-section {
+            opacity: 0;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.5s ease-out, opacity 0.5s ease-out;
+            margin-top: 0;
+            padding-top: 0;
+        }
+        .collapsible-section.show {
+            opacity: 1;
+            max-height: 300px; /* İçeriğe göre yeterli bir yükseklik ver */
+            margin-top: 1rem;
+            padding-top: 1rem;
+        }
+
+        /* Responsive ayarlar */
+        @media (max-width: 768px) {
+            .control-btn {
+                width: 70px;
+                height: 70px;
+                margin: 8px;
+            }
+            .control-btn .icon-emoji, .control-btn i {
+                font-size: 2rem;
+            }
+            .value-box .value {
+                font-size: 2rem;
+            }
+            .navbar-brand {
+                font-size: 1.5rem;
+            }
+            .nav-tabs .nav-link {
+                padding: 8px 15px;
+                font-size: 0.9rem;
+            }
+            .kulucka-takip-box .col-md-6, .cihaz-durumu-box .col-md-4, .cihaz-durumu-box .col-6 {
+                flex-direction: column; /* Küçük ekranlarda alt alta */
+                align-items: center;
+                justify-content: center;
+                text-align: center;
+                margin-bottom: 10px;
+            }
+            .kulucka-takip-box span, .cihaz-durumu-box span {
+                display: block;
+                margin-top: 5px;
+            }
+            .ota-update-btn {
+                padding: 10px 20px;
+                font-size: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-dark mb-4">
+        <div class="container">
+            <a class="navbar-brand" href="#">
+                <i class='bx bxl-sketch'></i> <!-- Marka ikonu -->
+                KULUÇKA KONTROL SİSTEMİ
+            </a>
+            <div class="time-display">
+                <i class='bx bx-time'></i> <!-- Saat ikonu -->
+                <span id="currentTime">--:--:--</span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="tab-container">
+            <!-- Sekme Navigasyonu -->
+            <ul class="nav nav-tabs" id="myTab" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="monitoring-tab" data-bs-toggle="tab" data-bs-target="#monitoring" type="button" role="tab" aria-controls="monitoring" aria-selected="true">
+                        <span class="icon-emoji">📊</span> İzleme <!-- İzleme emojisi -->
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button" role="tab" aria-controls="settings" aria-selected="false">
+                        <span class="icon-emoji">⚙️</span> Ayarlar <!-- Ayarlar emojisi -->
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="calibration-tab" data-bs-toggle="tab" data-bs-target="#calibration" type="button" role="tab" aria-controls="calibration" aria-selected="false">
+                        <span class="icon-emoji">⚖️</span> Kalibrasyon <!-- Kalibrasyon emojisi -->
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="system-tab" data-bs-toggle="tab" data-bs-target="#system" type="button" role="tab" aria-controls="system" aria-selected="false">
+                        <span class="icon-emoji">💻</span> Sistem <!-- Sistem emojisi -->
+                    </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="info-tab" data-bs-toggle="tab" data-bs-target="#info" type="button" role="tab" aria-controls="info" aria-selected="false">
+                        <span class="icon-emoji">ℹ️</span> Bilgi <!-- Bilgi emojisi -->
+                    </button>
+                </li>
+            </ul>
+
+            <!-- Sekme İçerikleri -->
+            <div class="tab-content" id="myTabContent">
+                <!-- İzleme Sekmesi -->
+                <div class="tab-pane fade show active" id="monitoring" role="tabpanel" aria-labelledby="monitoring-tab">
+                    <div class="row mb-4">
+                        <!-- Mevcut Sıcaklık -->
+                        <div class="col-md-6">
+                            <div class="value-box">
+                                <span class="icon-emoji">🌡️</span> <!-- Sıcaklık emojisi -->
+                                <div class="value" id="currentTemp">--.--°C</div>
+                                <div class="label">Sıcaklık</div>
+                            </div>
+                        </div>
+                        <!-- Mevcut Nem -->
+                        <div class="col-md-6">
+                            <div class="value-box">
+                                <span class="icon-emoji">💧</span> <!-- Nem emojisi -->
+                                <div class="value" id="currentHum">--.--%</div>
+                                <div class="label">Nem</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Hızlı Kontroller -->
+                    <div class="status-card text-center mb-4">
+                        <h5 class="mb-3">Hızlı Kontroller</h5>
+                        <button class="control-btn" id="lightBtn" onclick="toggleLight()">
+                            <span class="icon-emoji">💡</span> <!-- Ampul emojisi -->
+                        </button>
+                        <button class="control-btn" id="turnBtn" onmousedown="startTurning()" onmouseup="stopTurning()" ontouchstart="startTurning()" ontouchend="stopTurning()">
+                            <span class="icon-emoji">🔄</span> <!-- Çevirme emojisi -->
+                        </button>
+                    </div>
+
+                    <div class="row">
+                        <!-- Kuluçka Takibi -->
+                        <div class="col-lg-6 mb-4">
+                            <div class="kulucka-takip-box">
+                                <h5><span class="icon-emoji">🥚</span> Kuluçka Takibi</h5> <!-- Yumurta emojisi -->
+                                <div class="row">
+                                    <div class="col-12 col-md-6 d-flex align-items-center justify-content-center justify-content-md-start mb-2 mb-md-0">
+                                        Başlangıç Tarihi: <span id="startDateDisplay" class="ms-2">--/--/----</span>
+                                    </div>
+                                    <div class="col-12 col-md-6 d-flex align-items-center justify-content-center justify-content-md-start">
+                                        Geçen Gün: <span id="elapsedDays" class="ms-2">--</span> Gün
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <!-- Cihaz Durumu -->
+                        <div class="col-lg-6 mb-4">
+                            <div class="cihaz-durumu-box">
+                                <h5><span class="icon-emoji">📶</span> Cihaz Durumu</h5> <!-- Sinyal emojisi -->
+                                <div class="row">
+                                    <div class="col-12 col-md-4 d-flex align-items-center justify-content-center justify-content-md-start mb-2 mb-md-0">
+                                        Sinyal: <span id="signalDbm" class="ms-2">--</span> dBm
+                                    </div>
+                                    <div class="col-12 col-md-4 d-flex align-items-center justify-content-center justify-content-md-start mb-2 mb-md-0">
+                                        Bağlı Ağ: <span id="wifiName" class="ms-2">--</span>
+                                    </div>
+                                    <div class="col-12 col-md-4 d-flex align-items-center justify-content-center justify-content-md-start">
+                                        IP Adresi: <span id="ipAddress" class="ms-2">--.--.--.--</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Ayarlar Sekmesi -->
+                <div class="tab-pane fade" id="settings" role="tabpanel" aria-labelledby="settings-tab">
+                    <div class="settings-card">
+                        <h5><span class="icon-emoji">⚙️</span> Sistem Ayarları</h5>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="setpoint" class="form-label">Hedef Sıcaklık (°C)</label>
+                                <input type="number" step="0.1" class="form-control" id="setpoint" value="37.7" min="0" max="100">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="sethum" class="form-label">Hedef Nem (%)</label>
+                                <input type="number" step="0.1" class="form-control" id="sethum" value="55.0" min="0" max="100">
+                            </div>
+                        </div>
+
+                        <div class="mb-3 form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="pid" onchange="toggleOtoPidSection()">
+                            <label class="form-check-label" for="pid">PID Kontrol</label>
+                        </div>
+
+                        <div id="otoPidSection" class="collapsible-section">
+                            <div class="mb-3 form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="otoPid">
+                                <label class="form-check-label" for="otoPid">Otomatik PID Ayarı (Oto PID)</label>
+                            </div>
+                        </div>
+
+                        <div class="mb-4 form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="turnactive" onchange="toggleTurningSettings()">
+                            <label class="form-check-label" for="turnactive">Otomatik Çevirme</label>
+                        </div>
+
+                        <div id="turningSettingsSection" class="collapsible-section">
+                            <div class="row mb-3">
+                                <div class="col-md-6 mb-3 mb-md-0">
+                                    <label for="turnhour" class="form-label">Çevirme Zamanı</label>
+                                    <div class="input-group">
+                                        <input type="number" class="form-control" id="turnhour" min="0" max="23" value="2">
+                                        <span class="input-group-text">saat</span>
+                                        <input type="number" class="form-control" id="turnminute" min="0" max="59" value="0">
+                                        <span class="input-group-text">dk</span>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="turndurmin" class="form-label">Çevirme Süresi</label>
+                                    <div class="input-group">
+                                        <input type="number" class="form-control" id="turndurmin" min="0" max="59" value="0">
+                                        <span class="input-group-text">dk</span>
+                                        <input type="number" class="form-control" id="turndursec" min="0" max="59" value="15">
+                                        <span class="input-group-text">sn</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row mb-4">
+                                <div class="col-12">
+                                    <label for="autoStopDay" class="form-label">Çevirmeyi Durdurma Günü</label>
+                                    <input type="number" class="form-control" id="autoStopDay" min="0" value="18">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="row mb-4">
+                            <div class="col-12">
+                                <label for="startDate" class="form-label">Kuluçka Başlangıç Tarihi</label>
+                                <input type="date" class="form-control" id="startDate">
+                            </div>
+                        </div>
+
+                        <button class="btn btn-primary w-100 ota-update-btn" id="saveSettingsBtn" onclick="setVars()">
+                            <i class='bx bx-save button-icon'></i> Ayarları Kaydet
+                            <i class='bx bx-loader bx-spin ms-2 d-none' id="saveSettingsSpinner"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Kalibrasyon Sekmesi -->
+                <div class="tab-pane fade" id="calibration" role="tabpanel" aria-labelledby="calibration-tab">
+                    <div class="calibration-info-box mb-4">
+                        <p>Kalibrasyon, sensör okumalarını gerçek değerlere uyarlamak için kullanılır. Eğer sensörünüz yanlış değerler gösteriyorsa, buradan düzeltme yapabilirsiniz.</p>
+                        <p><strong>Örnek:</strong> Sensör 25.0°C gösterirken harici bir termometre 25.5°C gösteriyorsa, Sıcaklık Kalibrasyonuna <strong class="text-success">+0.5</strong> yazmalısınız.</p>
+                        <p>Benzer şekilde, Nem sensörü %60 gösterirken gerçek nem %58 ise, Nem Kalibrasyonuna <strong class="text-danger">-2.0</strong> yazmalısınız.</p>
+                        <p>Değişiklikleri kaydettikten sonra, sensörleriniz bu düzeltmeleri uygulayacaktır.</p>
+                    </div>
+
+                    <div class="settings-card">
+                        <h5><span class="icon-emoji">⚖️</span> Kalibrasyon Ayarları</h5>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="calibtemp" class="form-label">Sıcaklık Kalibrasyonu (°C)</label>
+                                <input type="number" step="0.1" class="form-control" id="calibtemp" value="0.0">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="calibhum" class="form-label">Nem Kalibrasyonu (%)</label>
+                                <input type="number" step="0.1" class="form-control" id="calibhum" value="0.0">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary w-100 ota-update-btn" id="saveCalibrationBtn" onclick="setCalibration()">
+                            <i class='bx bx-save button-icon'></i> Kalibrasyonu Kaydet
+                            <i class='bx bx-loader bx-spin ms-2 d-none' id="saveCalibrationSpinner"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Sistem Sekmesi -->
+                <div class="tab-pane fade" id="system" role="tabpanel" aria-labelledby="system-tab">
+                    <div class="settings-card mb-4">
+                        <h5><span class="icon-emoji">🔔</span> Alarm Ayarları</h5> <!-- Alarm emojisi -->
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="alarmMaxTemp" class="form-label">Maksimum Sıcaklık (°C)</label>
+                                <input type="number" step="0.1" class="form-control" id="alarmMaxTemp" value="40.0">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="alarmMinTemp" class="form-label">Minimum Sıcaklık (°C)</label>
+                                <input type="number" step="0.1" class="form-control" id="alarmMinTemp" value="35.0">
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <label for="alarmMaxHum" class="form-label">Maksimum Nem (%)</label>
+                                <input type="number" step="0.1" class="form-control" id="alarmMaxHum" value="70.0">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="alarmMinHum" class="form-label">Minimum Nem (%)</label>
+                                <input type="number" step="0.1" class="form-control" id="alarmMinHum" value="40.0">
+                            </div>
+                        </div>
+                        <div class="mb-4 form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="alarmEnabled">
+                            <label class="form-check-label" for="alarmEnabled">Alarm Aktif</label>
+                        </div>
+                        <button class="btn btn-primary w-100 ota-update-btn" id="saveAlarmSettingsBtn" onclick="setAlarmSettings()">
+                            <i class='bx bx-save button-icon'></i> Alarm Ayarlarını Kaydet
+                            <i class='bx bx-loader bx-spin ms-2 d-none' id="saveAlarmSettingsSpinner"></i>
+                        </button>
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <button class="btn btn-warning w-100 ota-update-btn" id="resetFactoryBtn" onclick="showConfirmationModal('Fabrika Ayarlarına Sıfırla', 'Tüm ayarlar fabrika ayarlarına sıfırlanacak. Emin misiniz?', resetFactoryDefaults)">
+                                <span class="icon-emoji button-icon">♻️</span> Fabrika Ayarlarına Dön
+                                <i class='bx bx-loader bx-spin ms-2 d-none' id="resetFactorySpinner"></i>
+                            </button>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <button class="btn btn-danger w-100 ota-update-btn" id="restartDeviceBtn" onclick="showConfirmationModal('Cihazı Yeniden Başlat', 'Cihazı yeniden başlatmak istediğinizden emin misiniz? Bağlantı geçici olarak kesilecektir.', restartDevice)">
+                                <span class="icon-emoji button-icon">🔁</span> Cihazı Yeniden Başlat
+                                <i class='bx bx-loader bx-spin ms-2 d-none' id="restartDeviceSpinner"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bilgi Sekmesi -->
+                <div class="tab-pane fade" id="info" role="tabpanel" aria-labelledby="info-tab">
+                    <div class="info-card">
+                        <h5><span class="icon-emoji">ℹ️</span> Sistem Bilgisi</h5>
+                        <div class="system-info-version">
+                            Geliştirilmiş (Canvas) Sürüm V.1.3
+                        </div>
+                        <h5 class="mt-4"><i class='bx bx-support'></i> Teknik Destek</h5> <!-- Destek ikonu -->
+                        <div class="contact-detail">
+                            <span class="icon-emoji">👤</span> Mehmet ÇAKIR
+                        </div>
+                        <div class="contact-detail">
+                            <span class="icon-emoji">📞</span> <a href="tel:+905363289962">0536 328 9962</a>
+                        </div>
+                        <div class="contact-detail">
+                            <span class="icon-emoji">📧</span> <a href="mailto:myfavoritess@gmail.com">myfavoritess@gmail.com</a>
+                        </div>
+                        <div class="company-name">
+                            ÇAKIR OTOMASYON
+                        </div>
+                    </div>
+                    <div class="ota-btn-container">
+                        <p class="text-muted mt-3">Cihaz yazılımınızı buradan güncelleyebilirsiniz. Güncelleme sırasında cihazınız yeniden başlayabilir.</p>
+                        <button class="ota-update-btn btn btn-primary" id="otaUpdateBtn" onclick="startOtaUpdate()">
+                            <span class="icon-emoji button-icon">⬇️</span> OTA Güncelleme Başlat <!-- Bulut indirme emojisi -->
+                            <i class='bx bx-loader bx-spin ms-2 d-none' id="otaUpdateSpinner"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Konteyneri -->
+    <div class="toast-container"></div>
+
+    <!-- Onay Modalı Yapısı -->
+    <div class="modal fade" id="confirmationModal" tabindex="-1" aria-labelledby="confirmationModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content rounded-3 shadow-lg">
+                <div class="modal-header bg-primary text-white rounded-top-3">
+                    <h5 class="modal-title" id="confirmationModalLabel"></h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body text-center py-4">
+                    <p id="confirmationModalMessage" class="lead"></p>
+                </div>
+                <div class="modal-footer d-flex justify-content-around p-3">
+                    <button type="button" class="btn btn-secondary rounded-pill px-4" data-bs-dismiss="modal">İptal</button>
+                    <button type="button" class="btn btn-primary rounded-pill px-4" id="confirmActionButton">Onayla</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap Bundle with Popper -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Kök değişkenler (Canvas ortamında tanımlı olabilir, yoksa varsayılan değerler kullanılır)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : '';
+
+        let lightState = false; // Işık durumu (açık/kapalı)
+        let turnState = false; // Manuel çevirme butonu basılı tutma durumu
+
+        // Modal için callback fonksiyonu saklama
+        let confirmActionCallback = null;
+
+        /**
+         * Belirli bir butonda yükleme spinner'ını gösterir veya gizler.
+         * @param {string} buttonId Butonun ID'si
+         * @param {boolean} show Spinner'ı göster (true) veya gizle (false)
+         */
+        function toggleLoading(buttonId, show) {
+            const button = document.getElementById(buttonId);
+            if (!button) return;
+
+            const spinner = button.querySelector('.bx-loader');
+            // Hem Boxicon hem emoji span'ı için icon sınıfını sorgula
+            const icon = button.querySelector('.button-icon, .icon-emoji');
+
+            if (spinner) {
+                if (show) {
+                    spinner.classList.remove('d-none');
+                    if (icon) icon.classList.add('d-none');
+                    button.disabled = true; // Butonu devre dışı bırak
+                } else {
+                    spinner.classList.add('d-none');
+                    if (icon) icon.classList.remove('d-none');
+                    button.disabled = false; // Butonu etkinleştir
+                }
+            }
+        }
+
+        /**
+         * Onay modalını gösterir ve bir eylem için onay ister.
+         * @param {string} title Modalı başlığı
+         * @param {string} message Modalı mesajı
+         * @param {function} onConfirm Kullanıcı onayladığında çalışacak fonksiyon
+         */
+        function showConfirmationModal(title, message, onConfirm) {
+            const modalElement = document.getElementById('confirmationModal');
+            const modalTitle = document.getElementById('confirmationModalLabel');
+            const modalMessage = document.getElementById('confirmationModalMessage');
+            const confirmBtn = document.getElementById('confirmActionButton');
+
+            modalTitle.textContent = title;
+            modalMessage.textContent = message;
+            confirmActionCallback = onConfirm; // Callback'i sakla
+
+            // Önceki event listener'ı kaldır (önemli!)
+            confirmBtn.onclick = null;
+            confirmBtn.onclick = () => {
+                if (confirmActionCallback) {
+                    confirmActionCallback(); // Callback'i çağır
+                }
+                const bootstrapModal = bootstrap.Modal.getInstance(modalElement);
+                if (bootstrapModal) {
+                    bootstrapModal.hide(); // Modalı kapat
+                }
+            };
+
+            const bootstrapModal = new bootstrap.Modal(modalElement);
+            bootstrapModal.show();
+        }
+
+        // Saat ve tarihi güncelleyen fonksiyon
+        function updateDateTime() {
+            const now = new Date();
+            // Türkiye lokalizasyonu ile tam tarih ve saat formatı
+            document.getElementById('currentTime').textContent = now.toLocaleString('tr-TR', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+            // Gün sayacını güncelle
+            updateDayCounter();
+        }
+
+        // Backend'den (ESP32) değişkenleri çeken fonksiyon
+        async function fetchVars() {
+            try {
+                // '/get' endpoint'ine GET isteği gönderir
+                const response = await fetch('/get');
+                if (!response.ok) {
+                    // Yanıt 200 OK değilse, bir hata fırlat
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                // Yanıtı JSON olarak ayrıştır
+                const data = await response.json();
+
+                // Gelen verileri HTML elemanlarına yerleştir
+                // Mevcut Değerler
+                document.getElementById('currentTemp').textContent = data.currentTemp !== undefined ? data.currentTemp.toFixed(1) + '°C' : '--.--°C';
+                document.getElementById('currentHum').textContent = data.currentHum !== undefined ? data.currentHum.toFixed(1) + '%' : '--.--%';
+
+                // Ayarlar
+                document.getElementById('setpoint').value = data.setpoint !== undefined ? data.setpoint : '37.7';
+                document.getElementById('sethum').value = data.sethum !== undefined ? data.sethum : '55.0';
+                document.getElementById('pid').checked = data.pid === 1;
+                document.getElementById('otoPid').checked = data.otoPid === 1;
+                document.getElementById('turnactive').checked = data.turnactive === 1;
+                document.getElementById('turnhour').value = data.turnhour !== undefined ? data.turnhour : '2';
+                document.getElementById('turnminute').value = data.turnminute !== undefined ? data.turnminute : '0';
+                document.getElementById('turndurmin').value = data.turndurmin !== undefined ? data.turndurmin : '0';
+                document.getElementById('turndursec').value = data.turndursec !== undefined ? data.turndursec : '15';
+
+                // Kalibrasyon
+                document.getElementById('calibtemp').value = data.calibtemp !== undefined ? data.calibtemp : '0.0';
+                document.getElementById('calibhum').value = data.calibhum !== undefined ? data.calibhum : '0.0';
+
+                // Alarm Ayarları (Sistem sekmesi için)
+                document.getElementById('alarmMaxTemp').value = data.alarmMaxTemp !== undefined ? data.alarmMaxTemp : '40.0';
+                document.getElementById('alarmMinTemp').value = data.alarmMinTemp !== undefined ? data.alarmMinTemp : '35.0';
+                document.getElementById('alarmMaxHum').value = data.alarmMaxHum !== undefined ? data.alarmMaxHum : '70.0';
+                document.getElementById('alarmMinHum').value = data.alarmMinHum !== undefined ? data.alarmMinHum : '40.0';
+                document.getElementById('alarmEnabled').checked = data.alarmEnabled === 1;
+
+                // Buton durumlarını güncelle (light için)
+                lightState = data.light === 1;
+                updateLightButtonState();
+
+                // Cihaz Durumu Güncellemeleri
+                document.getElementById('signalDbm').textContent = data.rssi !== undefined ? data.rssi : '--';
+                document.getElementById('wifiName').textContent = data.wifiName !== undefined ? data.wifiName : '--';
+                document.getElementById('ipAddress').textContent = data.ipAddress !== undefined ? data.ipAddress : '--.--.--.--';
+
+                // Kuluçka Takibi
+                if (data.startDate) {
+                    document.getElementById('startDate').value = data.startDate; // "YYYY-MM-DD" formatında al
+                    document.getElementById('startDateDisplay').textContent = new Date(data.startDate).toLocaleDateString('tr-TR');
+                } else {
+                    document.getElementById('startDateDisplay').textContent = document.getElementById('startDate').value ? new Date(document.getElementById('startDate').value).toLocaleDateString('tr-TR') : '--/--/----';
+                }
+                document.getElementById('autoStopDay').value = data.autoStopDay !== undefined ? data.autoStopDay : '18';
+
+                // Veriler çekildikten sonra tüm toggle'ların durumunu güncelle
+                updateDayCounter();
+                toggleOtoPidSection(); // PID kontrol durumu değişimini yansıt
+                toggleTurningSettings(); // Çevirme ayarları durumu değişimini yansıt
+
+            } catch (error) {
+                console.error('Veri çekme hatası:', error);
+                showToast('Veri çekilirken bir hata oluştu: ' + error.message, 'danger');
+            }
+        }
+
+        // Aydınlatma butonunun görsel durumunu güncelleyen fonksiyon
+        function updateLightButtonState() {
+            document.getElementById('lightBtn').classList.toggle('active', lightState);
+        }
+
+        // Aydınlatmayı açıp kapatan fonksiyon
+        async function toggleLight() {
+            toggleLoading('lightBtn', true); // Butona spinner ekle
+            lightState = !lightState; // Durumu tersine çevir
+            try {
+                const response = await fetch('/set?light=' + (lightState ? '1' : '0'));
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                updateLightButtonState(); // Butonun görsel durumunu güncelle
+                showToast(lightState ? 'Aydınlatma açıldı.' : 'Aydınlatma kapatıldı.', 'success');
+            } catch (error) {
+                console.error('Işık kontrol hatası:', error);
+                showToast('Işık kontrol edilirken bir hata oluştu: ' + error.message, 'danger');
+                lightState = !lightState; // Hata durumunda eski duruma dön
+                updateLightButtonState();
+            } finally {
+                toggleLoading('lightBtn', false); // Spinner'ı kaldır
+            }
+        }
+
+        // Çevirmeyi başlatan (basılı tutulduğunda) fonksiyon
+        async function startTurning() {
+            if (turnState) return; // Zaten açıksa tekrar başlatma (multiple calls debounce)
+            turnState = true;
+            document.getElementById('turnBtn').classList.add('active'); // Butonu yeşil yap
+            // toggleLoading('turnBtn', true); // Manuel çevirme için spinner sürekli basılı tutulduğunda uygun olmayabilir
+            try {
+                const response = await fetch('/manualturn?action=1');
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            } catch (error) {
+                console.error('Manuel çevirme başlatma hatası:', error);
+                showToast('Manuel çevirme başlatılırken hata: ' + error.message, 'danger');
+                stopTurning(); // Hata olursa durdur
+            }
+        }
+
+        // Çevirmeyi durduran (basılı tutmayı bıraktığında) fonksiyon
+        async function stopTurning() {
+            if (!turnState) return; // Zaten durdurulmuşsa tekrar durdurma
+            turnState = false;
+            document.getElementById('turnBtn').classList.remove('active'); // Butonu beyaz yap
+            // toggleLoading('turnBtn', false); // Manuel çevirme için spinner kapatma
+            try {
+                const response = await fetch('/manualturn?action=0');
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                showToast('Manuel çevirme durduruldu.', 'success');
+            } catch (error) {
+                console.error('Manuel çevirme durdurma hatası:', error);
+                showToast('Manuel çevirme durdurulurken hata: ' + error.message, 'danger');
+            }
+        }
+
+        // Ayarları backend'e gönderen fonksiyon
+        async function setVars() {
+            toggleLoading('saveSettingsBtn', true); // Butona spinner ekle
+            const formData = new FormData();
+
+            // İstemci tarafı doğrulama
+            const setpoint = parseFloat(document.getElementById('setpoint').value);
+            const sethum = parseFloat(document.getElementById('sethum').value);
+
+            if (isNaN(setpoint) || setpoint < 0 || setpoint > 100) {
+                showToast('Geçerli bir Hedef Sıcaklık girin (0-100 arasında).', 'danger');
+                toggleLoading('saveSettingsBtn', false);
+                return;
+            }
+            if (isNaN(sethum) || sethum < 0 || sethum > 100) {
+                showToast('Geçerli bir Hedef Nem girin (0-100 arasında).', 'danger');
+                toggleLoading('saveSettingsBtn', false);
+                return;
+            }
+
+            ['setpoint', 'sethum', 'pid', 'otoPid', 'turnactive', 'turnhour', 'turnminute', 'turndurmin', 'turndursec', 'startDate', 'autoStopDay'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    // Eğer otoPid alanı gizliyse (pid kapalıysa), değerini 0 olarak gönder
+                    if (id === 'otoPid' && !document.getElementById('pid').checked) {
+                        formData.append(id, '0');
+                    } else if (id === 'turnactive' && !el.checked) {
+                        // Eğer otomatik çevirme kapalıysa, zamanlama ayarlarını sıfırla veya gönderme
+                        // Bu kısım, backend'in bu durumu nasıl ele aldığına bağlı olarak değişebilir.
+                        // Şimdilik sadece toggle'ı gönderiyoruz, backend'in diğer değerleri yok saydığını varsayıyoruz.
+                        formData.append(id, '0');
+                        // Ayrıca, bağlı inputları da 0 olarak gönder (backend'in varsayılan olarak ne beklediğine bağlı)
+                        if (id === 'turnactive' && !el.checked) {
+                            formData.append('turnhour', '0');
+                            formData.append('turnminute', '0');
+                            formData.append('turndurmin', '0');
+                            formData.append('turndursec', '0');
+                            formData.append('autoStopDay', '0');
+                        }
+                    }
+                    else {
+                        formData.append(id, el.type === 'checkbox' ? (el.checked ? '1' : '0') : el.value);
+                    }
+                }
+            });
+
+            try {
+                const response = await fetch('/set', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                await response.text(); // Yanıtı oku (genellikle "OK" beklenir)
+                showToast('Ayarlar başarıyla kaydedildi.', 'success');
+                fetchVars(); // Ayarlar kaydedildikten sonra güncel verileri tekrar çek
+            } catch (error) {
+                console.error('Ayarları kaydetme hatası:', error);
+                showToast('Ayarlar kaydedilirken bir hata oluştu: ' + error.message, 'danger');
+            } finally {
+                toggleLoading('saveSettingsBtn', false); // Spinner'ı kaldır
+            }
+        }
+
+        // Kalibrasyon ayarlarını backend'e gönderen fonksiyon
+        async function setCalibration() {
+            toggleLoading('saveCalibrationBtn', true); // Butona spinner ekle
+            const formData = new FormData();
+            formData.append('calibtemp', document.getElementById('calibtemp').value);
+            formData.append('calibhum', document.getElementById('calibhum').value);
+            try {
+                const response = await fetch('/set', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                await response.text();
+                showToast('Kalibrasyon ayarları başarıyla kaydedildi.', 'success');
+                fetchVars(); // Kalibrasyon kaydedildikten sonra güncel verileri tekrar çek
+            } catch (error) {
+                console.error('Kalibrasyon kaydetme hatası:', error);
+                showToast('Kalibrasyon kaydedilirken bir hata oluştu: ' + error.message, 'danger');
+            } finally {
+                toggleLoading('saveCalibrationBtn', false); // Spinner'ı kaldır
+            }
+        }
+
+        // OTA güncelleme başlatan fonksiyon
+        async function startOtaUpdate() {
+            toggleLoading('otaUpdateBtn', true); // Butona spinner ekle
+            showToast('OTA Güncellemesi başlatılıyor...', 'info');
+            try {
+                const response = await fetch('/ota_update'); // '/ota_update' endpoint'ine GET isteği gönder
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                await response.text();
+                showToast('OTA Güncelleme isteği başarıyla gönderildi. Cihaz yeniden başlayabilir. Lütfen bekleyiniz.', 'success');
+                // Cihaz yeniden başlatıldığında sayfayı yenilemek iyi olabilir.
+                setTimeout(() => location.reload(), 15000); // Yaklaşık 15 saniye sonra sayfayı yenile
+            } catch (error) {
+                console.error('OTA Güncelleme hatası:', error);
+                showToast('OTA Güncelleme başlatılırken bir hata oluştu: ' + error.message, 'danger');
+            } finally {
+                toggleLoading('otaUpdateBtn', false); // Spinner'ı kaldır
+            }
+        }
+
+        // Kullanıcıya bildirim (toast) mesajı gösteren fonksiyon
+        function showToast(message, type = 'info') {
+            const toastContainer = document.querySelector('.toast-container');
+            const toastElement = document.createElement('div');
+            toastElement.className = `toast show text-white bg-${type} border-0`;
+            toastElement.setAttribute('role', 'alert');
+            toastElement.setAttribute('aria-live', 'assertive');
+            toastElement.setAttribute('aria-atomic', 'true');
+
+            // Toast başlığı için ikon seçimi
+            let iconClass = 'bx bx-info-circle';
+            if (type === 'success') iconClass = 'bx bx-check-circle';
+            if (type === 'danger') iconClass = 'bx bx-error-circle';
+            if (type === 'warning') iconClass = 'bx bx-warning';
+
+            toastElement.innerHTML = `
+                <div class="d-flex">
+                    <div class="toast-body d-flex align-items-center">
+                        <i class='${iconClass} me-2'></i> ${message}
+                    </div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+                </div>
+            `;
+            toastContainer.appendChild(toastElement);
+
+            const bootstrapToast = new bootstrap.Toast(toastElement, {
+                delay: 3000 // 3 saniye sonra otomatik kapan
+            });
+            bootstrapToast.show();
+
+            // Toast kapatıldığında DOM'dan kaldır
+            toastElement.addEventListener('hidden.bs.toast', () => {
+                toastElement.remove();
+            });
+        }
+
+        // Sistem sekmesi için yeni JS fonksiyonları
+        async function setAlarmSettings() {
+            toggleLoading('saveAlarmSettingsBtn', true); // Butona spinner ekle
+            const formData = new FormData();
+            formData.append('alarmMaxTemp', document.getElementById('alarmMaxTemp').value);
+            formData.append('alarmMinTemp', document.getElementById('alarmMinTemp').value);
+            formData.append('alarmMaxHum', document.getElementById('alarmMaxHum').value);
+            formData.append('alarmMinHum', document.getElementById('alarmMinHum').value);
+            formData.append('alarmEnabled', document.getElementById('alarmEnabled').checked ? '1' : '0');
+
+            try {
+                const response = await fetch('/set', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                await response.text();
+                showToast('Alarm ayarları kaydedildi.', 'success');
+                fetchVars(); // Ayarlar kaydedildikten sonra güncel verileri tekrar çek
+            } catch (err) {
+                console.error('Alarm ayarları kaydetme hatası:', err);
+                showToast('Hata: ' + err.message, 'danger');
+            } finally {
+                toggleLoading('saveAlarmSettingsBtn', false); // Spinner'ı kaldır
+            }
+        }
+
+        async function resetFactoryDefaults() {
+            toggleLoading('resetFactoryBtn', true); // Butona spinner ekle
+            try {
+                const response = await fetch('/reset', {
+                    method: 'POST'
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                await response.text();
+                showToast('Fabrika ayarlarına dönüldü.', 'warning');
+                setTimeout(() => location.reload(), 3000); // 3 saniye sonra sayfayı yenile
+            } catch (err) {
+                console.error('Sıfırlama hatası:', err);
+                showToast('Sıfırlama hatası: ' + err.message, 'danger');
+            } finally {
+                toggleLoading('resetFactoryBtn', false); // Spinner'ı kaldır
+            }
+        }
+
+        async function restartDevice() {
+            toggleLoading('restartDeviceBtn', true); // Butona spinner ekle
+            showToast('Cihaz yeniden başlatılıyor...', 'info');
+            try {
+                const response = await fetch('/restart');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                // Cihaz yeniden başlayacağı için, kısa bir gecikme sonrası sayfayı yenilemek iyi olabilir
+                setTimeout(() => location.reload(), 8000); // Cihazın yeniden başlaması için 8 saniye bekle
+            } catch (err) {
+                console.error('Cihaz yeniden başlatma hatası:', err);
+                showToast('Yeniden başlatılamadı: ' + err.message, 'danger');
+            } finally {
+                toggleLoading('restartDeviceBtn', false); // Spinner'ı kaldır
+            }
+        }
+
+        // Gün sayacını hesaplayan ve güncelleyen fonksiyon
+        function updateDayCounter() {
+            const startDateInput = document.getElementById('startDate').value;
+            const elapsedDaysSpan = document.getElementById('elapsedDays');
+            if (startDateInput) {
+                const startDate = new Date(startDateInput);
+                const today = new Date();
+                // Saat farkını göz ardı etmek için tarihleri gece yarısına sıfırla
+                startDate.setHours(0, 0, 0, 0);
+                today.setHours(0, 0, 0, 0);
+                const diffTime = Math.abs(today.getTime() - startDate.getTime());
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                elapsedDaysSpan.textContent = diffDays;
+            } else {
+                elapsedDaysSpan.textContent = '--';
+            }
+        }
+
+        // PID kontrol anahtarı değiştiğinde Oto PID bölümünü gizle/göster
+        function toggleOtoPidSection() {
+            const pidCheckbox = document.getElementById('pid');
+            const otoPidSection = document.getElementById('otoPidSection');
+            if (pidCheckbox.checked) {
+                otoPidSection.classList.add('show');
+            } else {
+                otoPidSection.classList.remove('show');
+            }
+        }
+
+        // Otomatik Çevirme anahtarı değiştiğinde ilgili ayarları gizle/göster
+        function toggleTurningSettings() {
+            const turnActiveCheckbox = document.getElementById('turnactive');
+            const turningSettingsSection = document.getElementById('turningSettingsSection');
+            if (turnActiveCheckbox.checked) {
+                turningSettingsSection.classList.add('show');
+            } else {
+                turningSettingsSection.classList.remove('show');
+            }
+        }
+
+        // Sayfa tamamen yüklendiğinde çalışacak olay dinleyicisi
+        document.addEventListener('DOMContentLoaded', () => {
+            // Kuluçka başlangıç tarihi için varsayılanı ayarla (sadece HTML'den yükleniyorsa)
+            const startDateInput = document.getElementById('startDate');
+            if (!startDateInput.value) { // Eğer backend'den bir değer gelmezse veya boşsa
+                const today = new Date();
+                const year = today.getFullYear();
+                const month = String(today.getMonth() + 1).padStart(2, '0'); // Ay 0-11 arası olduğu için +1
+                const day = String(today.getDate()).padStart(2, '0');
+                startDateInput.value = `${year}-${month}-${day}`;
+            }
+
+            fetchVars(); // Sayfa yüklendiğinde başlangıç verilerini çek
+            updateDateTime(); // Saati ve tarihi hemen güncelle
+            // Sayfa yüklendiğinde Oto PID ve Çevirme ayarları bölümlerinin görünürlüğünü ayarla
+            toggleOtoPidSection();
+            toggleTurningSettings();
+
+            // Her saniye saati, tarihi ve gün sayacını güncelle
+            setInterval(updateDateTime, 1000);
+            // Her 5 saniyede bir verileri backend'den çek (daha az sıklıkla)
+            setInterval(fetchVars, 5000);
+        });
+    </script>
+</body>
+</html>
